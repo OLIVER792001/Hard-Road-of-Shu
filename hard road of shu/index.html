@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hard Roads in Shu | Digital Humanities Project</title>
+    <meta name="description" content="A digital humanities project exploring Li Bai's 'Hard Roads in Shu' through geographic visualization, bilingual reading, and interactive mapping.">
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        /* ── Author Bio Box ── */
+        .author-bio {
+            margin-top: 2rem;
+            padding: 1.5rem 2rem;
+            background: linear-gradient(135deg, rgba(184,149,106,0.08) 0%, rgba(184,62,47,0.05) 100%);
+            border-left: 4px solid var(--gold);
+            border-radius: 0 8px 8px 0;
+        }
+        .author-bio h4 {
+            color: var(--gold);
+            font-size: 1rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-bottom: 0.8rem;
+        }
+        .author-bio p {
+            font-size: 0.97rem;
+            color: var(--ink-gray);
+            line-height: 1.8;
+            margin: 0;
+        }
+
+        /* ── Tripartite Reader ── */
+        .section-dark .reading-container-tri {
+            display: grid;
+            grid-template-columns: 1fr 1.4fr 0.8fr;
+            gap: 0;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+            min-height: 780px;
+            /* 移除 max-height 限制，允许内容自然展开并可滚动 */
+        }
+
+        /* Left: Manuscript panel */
+        .panel-manuscript {
+            background: #1c1a14;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            border-right: 1px solid rgba(184,149,106,0.25);
+            min-height: 780px;
+            max-height: 85vh;
+        }
+        .panel-manuscript .panel-header {
+            background: rgba(184,149,106,0.12);
+            padding: 1rem 1.2rem;
+            border-bottom: 1px solid rgba(184,149,106,0.25);
+            flex-shrink: 0;
+        }
+        .panel-manuscript .panel-header h3 {
+            color: var(--gold);
+            font-size: 0.78rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            margin: 0 0 0.15rem 0;
+        }
+        .panel-manuscript .panel-header p {
+            color: rgba(245,240,232,0.45);
+            font-size: 0.72rem;
+            margin: 0;
+        }
+        .manuscript-viewer {
+            flex: 1;
+            overflow: hidden;
+            position: relative;
+            cursor: grab;
+            background: #0d0c09;
+        }
+        .manuscript-viewer:active { cursor: grabbing; }
+        .manuscript-viewer img {
+            display: block;
+            transform-origin: 0 0;
+            user-select: none;
+            pointer-events: none;
+            max-width: none;
+        }
+        .zoom-controls {
+            position: absolute;
+            bottom: 14px;
+            right: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            z-index: 10;
+        }
+        .zoom-btn {
+            width: 32px;
+            height: 32px;
+            background: rgba(184,149,106,0.85);
+            color: #1a1a1a;
+            border: none;
+            border-radius: 4px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+            font-weight: bold;
+        }
+        .zoom-btn:hover { background: var(--gold); }
+        .zoom-label {
+            text-align: center;
+            color: rgba(245,240,232,0.55);
+            font-size: 0.68rem;
+            background: rgba(0,0,0,0.4);
+            border-radius: 3px;
+            padding: 2px 4px;
+        }
+
+        /* Middle: Textual Collation panel */
+        .panel-collation {
+            background: #f5f0e8;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid rgba(184,149,106,0.3);
+            overflow: hidden;
+            min-height: 780px;
+            max-height: 85vh;
+        }
+        .panel-collation .panel-header {
+            background: rgba(184,149,106,0.12);
+            padding: 1rem 1.4rem;
+            border-bottom: 2px solid rgba(184,149,106,0.35);
+            flex-shrink: 0;
+        }
+        .panel-collation .panel-header h3 {
+            color: var(--cinnabar);
+            font-size: 0.78rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            margin: 0 0 0.15rem 0;
+        }
+        .panel-collation .panel-header p {
+            color: var(--ink-light);
+            font-size: 0.72rem;
+            margin: 0;
+        }
+        .collation-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem 1.6rem;
+        }
+        .collation-verse {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.7rem;
+            padding: 0.8rem 0.9rem;
+            border-radius: 6px;
+            margin-bottom: 0.3rem;
+            transition: background 0.25s;
+            cursor: pointer;
+        }
+        .collation-verse:hover { background: rgba(184,149,106,0.1); }
+        .collation-verse.active { background: rgba(184,62,47,0.08); border-left: 3px solid var(--cinnabar); padding-left: 0.6rem; }
+        .v-num {
+            flex-shrink: 0;
+            width: 22px;
+            height: 22px;
+            background: var(--gold);
+            color: #fff;
+            font-size: 0.68rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 3px;
+        }
+        .v-text {
+            font-family: 'Noto Serif SC', serif;
+            font-size: 1.08rem;
+            line-height: 2;
+            color: var(--ink-black);
+        }
+        /* Deletion markup */
+        .del-char {
+            text-decoration: line-through;
+            text-decoration-color: var(--cinnabar);
+            text-decoration-thickness: 2px;
+            color: #999;
+        }
+        /* Insertion above */
+        .ins-wrapper {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            vertical-align: bottom;
+            line-height: 1.1;
+            margin: 0 1px;
+        }
+        .ins-new {
+            font-size: 0.75em;
+            color: var(--cinnabar);
+            font-weight: 600;
+            line-height: 1;
+            margin-bottom: 1px;
+            letter-spacing: 0.05em;
+        }
+        .ins-old {
+            font-size: 1em;
+            text-decoration: line-through;
+            text-decoration-color: var(--cinnabar);
+            text-decoration-thickness: 1.5px;
+            color: #aaa;
+        }
+        /* English translation stripe at bottom */
+        .collation-en {
+            font-style: italic;
+            font-size: 0.82rem;
+            color: var(--ink-light);
+            padding-left: 1.6rem;
+            margin-top: 0.15rem;
+            line-height: 1.6;
+        }
+
+        /* Right: Metadata panel */
+        .panel-metadata {
+            background: #1c1a14;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 780px;
+            max-height: 85vh;
+        }
+        .panel-metadata .panel-header {
+            background: rgba(184,149,106,0.12);
+            padding: 1rem 1.2rem;
+            border-bottom: 1px solid rgba(184,149,106,0.25);
+            flex-shrink: 0;
+        }
+        .panel-metadata .panel-header h3 {
+            color: var(--gold);
+            font-size: 0.78rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            margin: 0 0 0.15rem 0;
+        }
+        .panel-metadata .panel-header p {
+            color: rgba(245,240,232,0.45);
+            font-size: 0.72rem;
+            margin: 0;
+        }
+        .metadata-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.4rem 1.3rem;
+        }
+        .meta-block {
+            margin-bottom: 1.5rem;
+            padding-bottom: 1.3rem;
+            border-bottom: 1px solid rgba(184,149,106,0.18);
+        }
+        .meta-block:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        .meta-label {
+            font-size: 0.68rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--gold);
+            margin-bottom: 0.35rem;
+        }
+        .meta-value {
+            color: rgba(245,240,232,0.82);
+            font-size: 0.88rem;
+            line-height: 1.7;
+        }
+        .meta-value .zh {
+            font-family: 'Noto Serif SC', serif;
+            font-size: 1.05em;
+            color: rgba(245,240,232,0.65);
+            display: block;
+            margin-top: 0.15rem;
+        }
+        .meta-source-box {
+            background: rgba(184,149,106,0.1);
+            border: 1px solid rgba(184,149,106,0.25);
+            border-radius: 6px;
+            padding: 0.9rem 1rem;
+            margin-top: 0.4rem;
+        }
+        .meta-source-box p {
+            color: rgba(245,240,232,0.75);
+            font-size: 0.82rem;
+            line-height: 1.75;
+            margin: 0;
+        }
+        .meta-source-box p .zh {
+            font-family: 'Noto Serif SC', serif;
+            color: var(--gold);
+        }
+
+        /* Responsive for tripartite reader */
+        @media (max-width: 1024px) {
+            .reading-container-tri {
+                grid-template-columns: 1fr !important;
+                max-height: none !important;
+            }
+            .panel-manuscript, .panel-collation, .panel-metadata {
+                min-height: 420px;
+                max-height: none;
+            }
+        }
+
+        /* Scrollbar inside panels */
+        .collation-scroll::-webkit-scrollbar,
+        .metadata-scroll::-webkit-scrollbar,
+        .manuscript-viewer::-webkit-scrollbar { width: 5px; }
+        .collation-scroll::-webkit-scrollbar-track { background: var(--paper-dark); }
+        .collation-scroll::-webkit-scrollbar-thumb { background: var(--gold); border-radius: 3px; }
+        .metadata-scroll::-webkit-scrollbar-track { background: #111; }
+        .metadata-scroll::-webkit-scrollbar-thumb { background: rgba(184,149,106,0.5); border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="navbar-content">
+            <a href="#home" class="logo">蜀道难 <span>|</span> Hard Roads in Shu</a>
+            <ul class="nav-links" id="navLinks">
+                <li><a href="#home" class="active">Home</a></li>
+                <li><a href="#reading">Reading</a></li>
+                <li><a href="#map">Map</a></li>
+                <li><a href="#future">Future</a></li>
+                <li><a href="#about">About Us</a></li>
+            </ul>
+            <div class="menu-toggle" id="menuToggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section id="home" class="hero">
+        <div class="hero-bg"></div>
+        <div class="hero-overlay"></div>
+        <div class="hero-content">
+            <span class="hero-tag">DIGITAL HUMANITIES PROJECT</span>
+            <h1 class="hero-title chinese-text">蜀道难</h1>
+            <p class="hero-subtitle">Li Bai (701-762) · Tang Dynasty</p>
+            <p class="hero-quote">"蜀道之难，难于上青天"</p>
+            <p class="hero-quote-en">"The road to Shu is harder than climbing to the blue sky"</p>
+            <a href="#background" class="btn-explore">Begin Exploration</a>
+        </div>
+    </section>
+
+    <!-- Project Background Section -->
+    <section id="background" class="section">
+        <div class="section-header reveal">
+            <span class="section-tag">PROJECT BACKGROUND</span>
+            <h2 class="section-title">The Story Behind the Poem</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc">
+                Written during the Tianbao era (745-746 CE), "Hard Roads in Shu" reflects Li Bai's profound observation of political turmoil and personal struggle.
+            </p>
+        </div>
+        
+        <div class="bg-content">
+            <div class="bg-text reveal">
+                <h3>Historical Context</h3>
+                <p>
+                    The Tang Dynasty appeared prosperous on the surface, but beneath lay hidden crises. Emperor Xuanzong had grown indulgent in pleasure and neglected state affairs, delegating power to Chancellor Li Linfu. Regional military governors were gradually expanding their influence, and the Shu region's strategic location made it a coveted prize for warlords.
+                </p>
+                <p>
+                    Li Bai, with his keen political insight, perceived the looming threat of regional separatism. The treacherous mountain paths described in his poem became a metaphor for the dangerous political landscape of his time.
+                </p>
+                <p>
+                    Having been expelled from the capital due to his proud nature and conflicts with powerful officials, Li Bai channeled his frustration over thwarted ambitions into this masterpiece. The poem serves as both a personal lament and a veiled warning to the court about the vulnerability of Shu.
+                </p>
+                
+                <h3 style="margin-top: 2rem;">Literary Significance</h3>
+                <p>
+                    With its dramatic imagery, musical rhythm, and profound symbolism, "Hard Roads in Shu" stands as one of the greatest works in Chinese literature. The poem's famous opening line has become a proverb expressing the difficulty of any challenging endeavor.
+                </p>
+
+                <!-- Author Biography -->
+                <div class="author-bio">
+                    <h4>About the Author — Li Bai (李白)</h4>
+                    <p>
+                        Li Bai (701–762 CE), courtesy name Taibai, was one of the greatest poets of the Tang Dynasty and is widely regarded as the foremost romantic poet in Chinese literary history. Born in Central Asia and raised in Sichuan, he spent much of his life as a wandering poet and scholar. Known as the "Immortal Poet" (<em>Shixian</em>), Li Bai was celebrated for his extraordinary imagination, bold imagery, and unrestrained spirit. He briefly served at the imperial court of Emperor Xuanzong around 742 CE but was dismissed due to his unconventional temperament. His work, comprising over a thousand surviving poems, reflects themes of nature, friendship, wine, longing, and political disillusionment. "Hard Roads in Shu" stands as one of his most technically dazzling and emotionally charged masterpieces.
+                    </p>
+                </div>
+            </div>
+            
+            <div class="bg-image reveal">
+                <img src="images/libai-portrait.jpg" alt="Portrait of Li Bai">
+                <div class="bg-image-caption">
+                    <h4 class="chinese-text">李白 Li Bai</h4>
+                    <p>701-762 CE · The "Immortal Poet" of the Tang Dynasty</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Reading Section -->
+    <section id="reading" class="section section-dark" style="max-width:100%; padding: 5rem 2rem;">
+        <div class="section-header reveal">
+            <span class="section-tag">BILINGUAL READER</span>
+            <h2 class="section-title">Parallel Reading Experience</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc" style="color:rgba(245,240,232,0.65);">
+                Explore Li Bai's masterpiece through the Song-dynasty annotated manuscript, textual collation with variant markings, and an English translation. Drag the manuscript to pan; use the ＋／－ buttons to zoom.
+            </p>
+        </div>
+
+        <div class="reading-container-tri reveal" style="max-width:1320px; margin:0 auto;">
+
+            <!-- LEFT: Manuscript Viewer -->
+            <div class="panel-manuscript">
+                <div class="panel-header">
+                    <h3>Manuscript</h3>
+                    <p>Song Dynasty annotated edition — drag &amp; zoom</p>
+                </div>
+                <div class="manuscript-viewer" id="manuscriptViewer">
+                    <img id="manuscriptImg" src="images/shudaonan manuscript.jpg" alt="Song-dynasty annotated manuscript of Hard Roads in Shu" draggable="false">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" id="zoomIn" title="Zoom in">＋</button>
+                        <div class="zoom-label" id="zoomLabel">100%</div>
+                        <button class="zoom-btn" id="zoomOut" title="Zoom out">－</button>
+                        <button class="zoom-btn" id="zoomReset" title="Reset" style="font-size:0.8rem;">↺</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MIDDLE: Textual Collation + English -->
+            <div class="panel-collation">
+                <div class="panel-header">
+                    <h3>Textual Collation · 異文比對</h3>
+                    <p>Strikethrough = variant deleted; red superscript = revised reading · scroll for English translation</p>
+                </div>
+                <div class="collation-scroll" id="collationPanel">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- RIGHT: Metadata -->
+            <div class="panel-metadata">
+                <div class="panel-header">
+                    <h3>Metadata</h3>
+                    <p>Bibliographic information</p>
+                </div>
+                <div class="metadata-scroll">
+                    <div class="meta-block">
+                        <div class="meta-label">Author</div>
+                        <div class="meta-value">
+                            Li Bai (李白)
+                            <span class="zh">李白，字太白，號青蓮居士</span>
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Title</div>
+                        <div class="meta-value">
+                            Hard Roads in Shu
+                            <span class="zh">蜀道難</span>
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Date of Composition</div>
+                        <div class="meta-value">c. 742–744 CE<br><span style="color:rgba(245,240,232,0.5); font-size:0.82em;">Tianbao reign period, Tang Dynasty</span></div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Form / Genre</div>
+                        <div class="meta-value">
+                            Ancient Ballad (<em>gǔ yuèfǔ</em>)
+                            <span class="zh">古樂府</span>
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Collected In</div>
+                        <div class="meta-value" style="font-size:0.85rem; line-height:1.75;">
+                            <em>Classified and Supplementary Annotations to the Poetry of Li Taibai</em>, fascicle 3 ("Ancient Ballads")
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Manuscript Source</div>
+                        <div class="meta-source-box">
+                            <p>
+                                <span class="zh">南宋·楊齊賢（集註）</span><br>
+                                <span class="zh">元·蕭士贇（補註）</span><br>
+                                <span class="zh">本《分類補註李太白詩·卷之三·古樂府》</span>
+                            </p>
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">English Translation</div>
+                        <div class="meta-value" style="font-size:0.85rem;">
+                            Witter Bynner (1929)<br>
+                            <span style="color:rgba(245,240,232,0.45); font-size:0.9em;"><em>The Jade Mountain: A Chinese Anthology</em></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- .reading-container-tri -->
+    </section>
+
+    <!-- Map Section -->
+    <section id="map" class="section">
+        <div class="section-header reveal">
+            <span class="section-tag">INTERACTIVE MAP</span>
+            <h2 class="section-title">Journey Through Shu</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc">
+                Click on the marked locations to explore the geographical references in Li Bai's poem. Discover ancient and modern place names, related verses, and historical significance.
+            </p>
+        </div>
+        
+        <div class="map-container reveal">
+            <div class="map-area">
+                <img src="images/shu-road-map.jpg" alt="Map of Shu Road" class="map-image">
+                <div class="map-point" data-id="chang-an" data-name="Chang'an" style="top: 25%; left: 78%;"></div>
+                <div class="map-point" data-id="qinling" data-name="Qinling Mountains" style="top: 35%; left: 70%;"></div>
+                <div class="map-point" data-id="qingni" data-name="Qingni Ridge" style="top: 45%; left: 60%;"></div>
+                <div class="map-point" data-id="jianmen" data-name="Jianmen Pass" style="top: 55%; left: 45%;"></div>
+                <div class="map-point" data-id="jincheng" data-name="Jincheng (Chengdu)" style="top: 75%; left: 25%;"></div>
+            </div>
+            
+            <div class="map-info" id="mapInfo">
+                <div class="map-info-default">
+                    <h3>Explore the Map</h3>
+                    <p>Click on any location marker to discover its significance in Li Bai's poem.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Future Section -->
+    <section id="future" class="section section-dark">
+        <div class="section-header reveal">
+            <span class="section-tag">VISION & ROADMAP</span>
+            <h2 class="section-title">The Road Ahead</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc">
+                Our vision for this digital humanities project and future directions for development.
+            </p>
+        </div>
+        
+        <div class="future-grid">
+            <div class="future-card reveal">
+                <h3>Project Vision</h3>
+                <p>
+                    This project was born from a passion for bridging classical Chinese literature with modern digital scholarship. We believe that ancient texts like "Hard Roads in Shu" deserve to be experienced in ways that honor their cultural depth while making them accessible to global audiences.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Digital Humanities Mission</h3>
+                <p>
+                    Our goal is to demonstrate how digital tools can illuminate traditional humanities research. By combining geographic visualization, bilingual textual analysis, and interactive mapping, we create new pathways for understanding and appreciating classical literature.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Future Enhancements</h3>
+                <p>
+                    Planned updates include: TEI-encoded full text with scholarly annotations, audio recordings of traditional Chinese recitation, 3D terrain visualization of the Shu Road, comparative analysis with other Tang Dynasty travel poetry, and collaborative annotation features for scholars.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Research Applications</h3>
+                <p>
+                    This platform can serve as a model for digital humanities projects examining other classical Chinese texts. The framework we've developed—combining textual analysis with geographic and historical context—can be adapted for studying poetry, historical documents, and literary journeys.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Educational Outreach</h3>
+                <p>
+                    We envision this project being used in classrooms worldwide to teach Chinese literature, history, and digital humanities methods. Future versions will include guided tours, discussion prompts, and assignment modules for educators.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Community Building</h3>
+                <p>
+                    We hope to build a community of scholars, students, and enthusiasts passionate about classical Chinese literature. Future features may include forums for discussion, crowdsourced annotations, and collaborative research tools.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- About Us Section -->
+    <section id="about" class="section">
+        <div class="section-header reveal">
+            <span class="section-tag">THE TEAM</span>
+            <h2 class="section-title">About Us</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc">
+                Meet the creators behind this digital humanities project.
+            </p>
+        </div>
+        
+        <div class="about-content">
+            <div class="team-member reveal">
+                <div class="member-avatar">Y</div>
+                <h3>Yuming</h3>
+                <p class="role">Technical Development &amp; Interaction Design</p>
+                <p>
+                    Yuming leads the technical implementation of the project, developing the interactive map functionality, bilingual reader interface, and overall user experience. With expertise in web development and digital humanities tools, Yuming ensures that the technical aspects serve the scholarly content effectively.
+                </p>
+            </div>
+            
+            <div class="team-member reveal">
+                <div class="member-avatar">J</div>
+                <h3>Jingtong</h3>
+                <p class="role">Reading Section &amp; Content Curation</p>
+                <p>
+                    Jingtong is responsible for the bilingual reading experience, carefully curating the parallel text presentation and ensuring the accuracy of translations. With a background in classical Chinese literature, Jingtong brings scholarly depth to the project's textual content.
+                </p>
+            </div>
+            
+            <div class="about-shared reveal">
+                <h4>Collaborative Work</h4>
+                <p>
+                    Both team members jointly contributed to the project conception, topic selection, and overall design logic. The project represents a collaborative effort combining technical expertise with literary scholarship to create a meaningful digital humanities experience.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-brand">
+                <h3>蜀道难 <span>|</span> Hard Roads in Shu</h3>
+                <p>
+                    A digital humanities project exploring Li Bai's masterpiece through geographic visualization, bilingual reading, and interactive mapping.
+                </p>
+            </div>
+            
+            <div class="footer-links">
+                <h4>Navigation</h4>
+                <ul>
+                    <li><a href="#home">Home</a></li>
+                    <li><a href="#reading">Reading</a></li>
+                    <li><a href="#map">Map</a></li>
+                    <li><a href="#future">Future</a></li>
+                    <li><a href="#about">About Us</a></li>
+                </ul>
+            </div>
+            
+            <div class="footer-contact">
+                <h4>Project Info</h4>
+                <ul>
+                    <li>Original Text: Li Bai</li>
+                    <li>Translation: Witter Bynner (1929)</li>
+                    <li>Digital Humanities</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="footer-bottom">
+            <p class="footer-quote">"蜀道之难，难于上青天，侧身西望长咨嗟"</p>
+            <p class="footer-copyright">
+                &copy; 2026 Hard Roads in Shu Digital Humanities Project
+            </p>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+    <script>
+    // ── Poem data with textual variants (collation) ──
+    // Format for cn: array of tokens. Each token is either a plain string
+    // or an object { del: "old", ins: "new" } indicating a manuscript variant.
+    const collationData = [
+        {
+            cn: [{ del:"嚱", ins:"噫" }, "吁嚱，危乎高哉！"],
+            en: "Oho! Behold! How high! How steep!"
+        },
+        {
+            cn: ["蜀道之难，难于上青天！"],
+            en: "The road to Shu is harder than climbing to the blue sky."
+        },
+        {
+            cn: ["蚕丛及鱼凫，开国何茫然！"],
+            en: "Cancong and Yufu, founders of the ancient Shu kingdom, Their deeds in the misty past are but legends now."
+        },
+        {
+            cn: ["尔来四万八千岁，不与秦", { del:"塞", ins:"壁" }, "通人烟。"],
+            en: "For forty-eight thousand years since then, No human trace has crossed the Qin mountains."
+        },
+        {
+            cn: ["西当太白有鸟道，可以横绝峨眉巅。"],
+            en: "Only birds could find a path west of Taibai Peak, Flying across the summit of Emei Mountain."
+        },
+        {
+            cn: ["地崩山摧壮士死，然后天梯石栈相钩连。"],
+            en: "When mountains crumbled and brave men died, Then heaven's ladders and stone bridges were linked."
+        },
+        {
+            cn: ["上有六龙回日之高标，下有冲波逆折之回川。"],
+            en: "Above, peaks so high that the six dragons of the sun must turn back; Below, rushing waves that churn and twist in the winding rivers."
+        },
+        {
+            cn: ["黄鹤之飞尚不得过，猿猱欲度愁攀援。"],
+            en: "Even the yellow crane cannot fly across; Even the monkeys despair of climbing over."
+        },
+        {
+            cn: ["青泥何盘盘，百步九折萦岩峦。"],
+            en: "The Qingni Ridge winds and twists, Nine turns in a hundred steps around the rocky peaks."
+        },
+        {
+            cn: ["扪参历井仰胁息，以手抚膺坐长叹。"],
+            en: "Touching the stars, one gasps for breath, Hand on chest, sitting down with a long sigh."
+        },
+        {
+            cn: ["问君西游何时还？畏途巉岩不可攀。"],
+            en: "Tell me, when will you return from your western journey? The perilous path with its jagged rocks cannot be climbed."
+        },
+        {
+            cn: ["但见悲鸟号古木，雄飞雌从绕林间。"],
+            en: "Only hear mournful birds crying in ancient trees, Males flying ahead, females following, circling through the forest."
+        },
+        {
+            cn: ["又闻子规啼夜月，愁空山。"],
+            en: "And hear the cuckoo weeping under the moon, Filling the empty mountains with sorrow."
+        },
+        {
+            cn: ["蜀道之难，难于上青天，使人听此", { del:"凋", ins:"调" }, "朱颜！"],
+            en: "The road to Shu is harder than climbing to the blue sky, Hearing this makes one's rosy cheeks fade with fear!"
+        },
+        {
+            cn: ["连峰去天不盈尺，枯松倒挂倚绝壁。"],
+            en: "Peaks linked together, less than a foot from heaven, Withered pines hang upside down against sheer cliffs."
+        },
+        {
+            cn: ["飞湍瀑流争喧", { del:"豗", ins:"嘩" }, "，砯崖转石万壑雷。"],
+            en: "Rushing torrents and cascading waterfalls clamor and roar, Boulders tumbling down cliffs like thunder in a thousand valleys."
+        },
+        {
+            cn: ["其险也如此，嗟尔远道之人胡为乎来哉！"],
+            en: "So dangerous it is! Alas, why have you come, You who must travel this distant road?"
+        },
+        {
+            cn: ["剑阁峥嵘而崔嵬，一夫当关，万夫莫开。"],
+            en: "Jianmen Pass rises steep and towering, One man guards it, ten thousand cannot pass."
+        },
+        {
+            cn: ["所守或匪亲，化为狼与豺。"],
+            en: "If the guardian is not loyal, he becomes a wolf or jackal, Ready to devour the unwary traveler."
+        },
+        {
+            cn: ["朝避猛虎，夕避长蛇；磨牙吮血，杀人如麻。"],
+            en: "Avoid the fierce tiger in the morning, the long serpent at night; They grind their teeth and suck blood, killing like hemp."
+        },
+        {
+            cn: ["锦城虽云乐，不如早还家。"],
+            en: "Though the Brocade City may be pleasant, It is better to return home early."
+        },
+        {
+            cn: ["蜀道之难，难于上青天，侧身西望长咨嗟！"],
+            en: "The road to Shu is harder than climbing to the blue sky, Turning westward with a long, long sigh!"
+        }
+    ];
+
+    // Render a cn token array into HTML
+    function renderCn(tokens) {
+        if (typeof tokens === 'string') return tokens;
+        return tokens.map(function(t) {
+            if (typeof t === 'string') return t;
+            // variant: del old, ins new above
+            return '<span class="ins-wrapper"><span class="ins-new">' + t.ins +
+                   '</span><span class="ins-old">' + t.del + '</span></span>';
+        }).join('');
+    }
+
+    // Build collation panel
+    function initCollationPanel() {
+        var panel = document.getElementById('collationPanel');
+        if (!panel) return;
+        collationData.forEach(function(verse, idx) {
+            var div = document.createElement('div');
+            div.className = 'collation-verse';
+            div.dataset.index = idx;
+            div.innerHTML =
+                '<span class="v-num">' + (idx + 1) + '</span>' +
+                '<div>' +
+                  '<div class="v-text">' + renderCn(verse.cn) + '</div>' +
+                  '<div class="collation-en">' + verse.en + '</div>' +
+                '</div>';
+            panel.appendChild(div);
+        });
+
+        // Hover highlight
+        var verses = panel.querySelectorAll('.collation-verse');
+        verses.forEach(function(v) {
+            v.addEventListener('mouseenter', function() { v.classList.add('active'); });
+            v.addEventListener('mouseleave', function() { v.classList.remove('active'); });
+        });
+    }
+
+    // ── Manuscript pan & zoom ──
+    function initManuscriptViewer() {
+        var viewer = document.getElementById('manuscriptViewer');
+        var img    = document.getElementById('manuscriptImg');
+        if (!viewer || !img) return;
+
+        var scale = 1, minScale = 0.4, maxScale = 4;
+        var offsetX = 0, offsetY = 0;
+        var dragging = false, startX, startY, baseX, baseY;
+
+        function applyTransform() {
+            img.style.transform = 'translate(' + offsetX + 'px,' + offsetY + 'px) scale(' + scale + ')';
+            document.getElementById('zoomLabel').textContent = Math.round(scale * 100) + '%';
+        }
+
+        // Clamp offset so image doesn't leave the viewer completely
+        function clamp() {
+            var iw = img.naturalWidth  * scale;
+            var ih = img.naturalHeight * scale;
+            var vw = viewer.clientWidth;
+            var vh = viewer.clientHeight;
+            var minX = Math.min(0, vw - iw);
+            var minY = Math.min(0, vh - ih);
+            offsetX = Math.max(minX, Math.min(0, offsetX));
+            offsetY = Math.max(minY, Math.min(0, offsetY));
+        }
+
+        document.getElementById('zoomIn').addEventListener('click', function() {
+            scale = Math.min(maxScale, scale + 0.25);
+            clamp(); applyTransform();
+        });
+        document.getElementById('zoomOut').addEventListener('click', function() {
+            scale = Math.max(minScale, scale - 0.25);
+            clamp(); applyTransform();
+        });
+        document.getElementById('zoomReset').addEventListener('click', function() {
+            scale = 1; offsetX = 0; offsetY = 0; applyTransform();
+        });
+
+        // Wheel zoom
+        viewer.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            var delta = e.deltaY > 0 ? -0.15 : 0.15;
+            scale = Math.max(minScale, Math.min(maxScale, scale + delta));
+            clamp(); applyTransform();
+        }, { passive: false });
+
+        // Drag
+        viewer.addEventListener('mousedown', function(e) {
+            if (e.button !== 0) return;
+            dragging = true;
+            startX = e.clientX; startY = e.clientY;
+            baseX = offsetX;   baseY = offsetY;
+            viewer.style.cursor = 'grabbing';
+        });
+        window.addEventListener('mousemove', function(e) {
+            if (!dragging) return;
+            offsetX = baseX + (e.clientX - startX);
+            offsetY = baseY + (e.clientY - startY);
+            clamp(); applyTransform();
+        });
+        window.addEventListener('mouseup', function() {
+            dragging = false;
+            viewer.style.cursor = 'grab';
+        });
+
+        // Touch support
+        var touchStartX, touchStartY, touchBaseX, touchBaseY;
+        viewer.addEventListener('touchstart', function(e) {
+            if (e.touches.length === 1) {
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+                touchBaseX = offsetX; touchBaseY = offsetY;
+            }
+        }, { passive: true });
+        viewer.addEventListener('touchmove', function(e) {
+            if (e.touches.length === 1) {
+                offsetX = touchBaseX + (e.touches[0].clientX - touchStartX);
+                offsetY = touchBaseY + (e.touches[0].clientY - touchStartY);
+                clamp(); applyTransform();
+            }
+        }, { passive: true });
+
+        // Initial fit
+        img.addEventListener('load', function() {
+            var ratio = Math.min(viewer.clientWidth / img.naturalWidth, viewer.clientHeight / img.naturalHeight);
+            scale = Math.max(minScale, Math.min(1, ratio));
+            offsetX = 0; offsetY = 0;
+            applyTransform();
+        });
+        if (img.complete && img.naturalWidth) {
+            var ratio = Math.min(viewer.clientWidth / img.naturalWidth, viewer.clientHeight / img.naturalHeight);
+            scale = Math.max(minScale, Math.min(1, ratio));
+            applyTransform();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        initCollationPanel();
+        initManuscriptViewer();
+    });
+    </script>
+</body>
+</html>
