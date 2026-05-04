@@ -1,0 +1,62 @@
+@prefix ex: <http://example.org/poem/> .
+@prefix dc: <http://purl.org/dc/elements/1.1/> .
+@prefix schema: <http://schema.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:ShuDaoNan a schema:CreativeWork ;
+    dc:title "The Hard Road to Shu" ;
+    dc:creator "Li Bai" ;
+    schema:translator "Witter Bynner" ;
+    schema:isPartOf [
+        schema:name "The Jade Mountain" ;
+        schema:bookFormat schema:BookFormat
+    ] ;
+    schema:text """
+        [Part 1]
+        Male birds smoothly wheeling, following the females;
+        And there come to us the melancholy voices of the cuckoos
+        Out on the empty mountain, under the lonely moon ...
+        Such travelling is harder than scaling the blue sky.
+        Even to hear of it turns the cheek pale,
+        With the highest crag barely a foot below heaven.
+        Dry pines hang, head down, from the face of the cliffs,
+        And a thousand plunging cataracts outroar one another
+        And send through ten thousand valleys a thunder of spinning stones.
+        With all this danger upon danger,
+        Why do people come here who live at a safe distance?
+        ... Though Dagger-Tower Pass be firm and grim,
+        And while one man guards it
+        Ten thousand cannot force it,
+        What if he be not loyal,
+        But a wolf toward his fellows?
+        ... There are ravenous tigers to fear in the day
+        And venomous reptiles in the night
+        With their teeth and their fangs ready
+        To cut people down like hemp.
+        ... Though the City of Silk be delectable, I would rather turn home quickly.
+        Such travelling is harder than scaling the blue sky ...
+        But I still face westward with a dreary moan.
+
+        [Part 2]
+        Oh, but it is high and very dangerous!
+        Such travelling is harder than scaling the blue sky.
+        ... Until two rulers of this region
+        Pushed their way through in the misty ages,
+        Forty-eight thousand years had passed
+        With nobody arriving across the Ch'in border.
+        And the Great White Mountain, westward, still has only a bird's path
+        Up to the summit of O-mêi Peak —
+        Which was broken once by an earthquake and there were brave men lost,
+        Just finishing the stone rungs of their ladder toward heaven.
+        ... High, as on a tall flag, six dragons drive the sun,
+        While the river, far below, lashes its twisted course.
+        Such height would be hard going for even a yellow crane,
+        So pity the poor monkeys who have only paws to use.
+        The Mountain of Green Clay is formed of many circles —
+        Each hundred steps, we have to turn nine turns among its mounds.
+        Panting, we brush Orion and pass the Well Star,
+        Then, holding our chests with our hands and sinking to the ground with a groan,
+        We wonder if this westward trail will never have an end.
+        The formidable path ahead grows darker, darker still,
+        With nothing heard but the call of birds hemmed in by the ancient forest,
+    """ .
