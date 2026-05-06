@@ -11,6 +11,13 @@ ex:ShuDaoNan a schema:CreativeWork ;
         schema:name "The Jade Mountain" ;
         schema:bookFormat schema:BookFormat
     ] ;
+    
+    schema:contentLocation ex:Dagger-Tower_Pass, 
+                           ex:City_of_Silk, 
+                           ex:Great_White_Mountain, 
+                           ex:O-mêi_Peak, 
+                           ex:Mountain_of_Green_Clay ;
+
     schema:text """
         [Part 1]
         Male birds smoothly wheeling, following the females;
@@ -60,3 +67,39 @@ ex:ShuDaoNan a schema:CreativeWork ;
         The formidable path ahead grows darker, darker still,
         With nothing heard but the call of birds hemmed in by the ancient forest,
     """ .
+
+
+# Dagger-Tower Pass (剑门关)
+ex:Dagger-Tower_Pass a schema:Place ;                   
+    schema:name "Dagger-Tower Pass" ;                     
+    schema:latitude "32.21"^^xsd:float ;                
+    schema:longitude "105.57"^^xsd:float ;           
+    schema:alternateName "Jianmen Pass" .                
+
+# City of Silk (成都/锦官城)
+ex:City_of_Silk a schema:Place ;
+    schema:name "City of Silk" ;
+    schema:latitude "30.65"^^xsd:float ;
+    schema:longitude "104.06"^^xsd:float ;
+    schema:alternateName "Chengdu" .
+
+# Great White Mountain (太白山)
+ex:Great_White_Mountain a schema:Place ;
+    schema:name "Great White Mountain" ;
+    schema:latitude "33.96"^^xsd:float ;
+    schema:longitude "107.76"^^xsd:float ;
+    schema:alternateName "Taibai Mountain" .
+
+# O-mêi Peak (峨眉山)
+ex:O-mêi_Peak a schema:Place ;
+    schema:name "O-mêi Peak" ;
+    schema:latitude "29.52"^^xsd:float ;
+    schema:longitude "103.33"^^xsd:float ;
+    schema:alternateName "Mount Emei" .
+
+# Mountain of Green Clay (青泥岭)
+ex:Mountain_of_Green_Clay a schema:Place ;
+    schema:name "Mountain of Green Clay" ;
+    schema:latitude "33.01"^^xsd:float ;
+    schema:longitude "106.05"^^xsd:float ;
+    schema:alternateName "Qingni Ridge" .
