@@ -69,37 +69,41 @@ ex:ShuDaoNan a schema:CreativeWork ;
     """ .
 
 
-# Dagger-Tower Pass (剑门关)
-ex:Dagger-Tower_Pass a schema:Place ;                   
-    schema:name "Dagger-Tower Pass" ;                     
-    schema:latitude "32.21"^^xsd:float ;                
-    schema:longitude "105.57"^^xsd:float ;           
-    schema:alternateName "Jianmen Pass" .                
+@prefix ex: <http://example.org/poem/> .
+@prefix schema: <http://schema.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-# City of Silk (成都/锦官城)
-ex:City_of_Silk a schema:Place ;
+# 1. 剑门关 -> 对应 JS 的 'jianmen'
+ex:jianmen a schema:Place ;
+    schema:name "Dagger-Tower Pass" ;
+    schema:latitude "32.21"^^xsd:float ;     # 保留你的原始数据
+    schema:longitude "105.57"^^xsd:float ;    # 保留你的原始数据
+    schema:alternateName "Jianmen Pass", "剑门关" .
+
+# 2. 锦官城 -> 对应 JS 的 'jincheng'
+ex:jincheng a schema:Place ;
     schema:name "City of Silk" ;
-    schema:latitude "30.65"^^xsd:float ;
-    schema:longitude "104.06"^^xsd:float ;
-    schema:alternateName "Chengdu" .
+    schema:latitude "30.65"^^xsd:float ;      # 保留你的原始数据
+    schema:longitude "104.06"^^xsd:float ;     # 保留你的原始数据
+    schema:alternateName "Chengdu", "锦城" .
 
-# Great White Mountain (太白山)
-ex:Great_White_Mountain a schema:Place ;
+# 3. 太白山 -> 对应 JS 的 'chang-an' (因为你 JS 里 chang-an 的诗句写的是太白山)
+ex:chang-an a schema:Place ;
     schema:name "Great White Mountain" ;
-    schema:latitude "33.96"^^xsd:float ;
-    schema:longitude "107.76"^^xsd:float ;
-    schema:alternateName "Taibai Mountain" .
+    schema:latitude "33.96"^^xsd:float ;      # 保留你的原始数据
+    schema:longitude "107.76"^^xsd:float ;     # 保留你的原始数据
+    schema:alternateName "Taibai Mountain", "长安" .
 
-# O-mêi Peak (峨眉山)
-ex:O-mêi_Peak a schema:Place ;
-    schema:name "O-mêi Peak" ;
-    schema:latitude "29.52"^^xsd:float ;
-    schema:longitude "103.33"^^xsd:float ;
-    schema:alternateName "Mount Emei" .
-
-# Mountain of Green Clay (青泥岭)
-ex:Mountain_of_Green_Clay a schema:Place ;
+# 4. 青泥岭 -> 对应 JS 的 'qingni'
+ex:qingni a schema:Place ;
     schema:name "Mountain of Green Clay" ;
-    schema:latitude "33.01"^^xsd:float ;
-    schema:longitude "106.05"^^xsd:float ;
-    schema:alternateName "Qingni Ridge" .
+    schema:latitude "33.01"^^xsd:float ;      # 保留你的原始数据
+    schema:longitude "106.05"^^xsd:float ;     # 保留你的原始数据
+    schema:alternateName "Qingni Ridge", "青泥岭" .
+
+# 5. 秦岭 -> 对应 JS 的 'qinling'
+ex:qinling a schema:Place ;
+    schema:name "Qinling Mountains" ;
+    schema:latitude "34.20"^^xsd:float ;      # 建议坐标，可根据需要调整
+    schema:longitude "108.90"^^xsd:float ;
+    schema:alternateName "Qin Mountains", "秦岭" .
