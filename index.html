@@ -1,998 +1,909 @@
-# -*- coding: utf-8 -*-
-from __future__ import annotations
-
-# 标准库
-import json
-import os
-import re
-import sqlite3
-import traceback
-from typing import Any, Dict, List, Optional, Set
-
-# 第三方库
-import pandas as pd
-import requests
-
-from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import RDF, XSD
-from rdflib.plugins.stores.sparqlstore import SPARQLStore
-
-
-# =============================================================================
-# RDF 命名空间
-# =============================================================================
-
-SCHEMA = Namespace("https://schema.org/")
-
-
-# =============================================================================
-# 数据实体类
-# =============================================================================
-
-class IdentifiableEntity:
-    def __init__(self, id: str = ""):
-        self._id: str = str(id).strip() if id else ""
-
-    def getIds(self) -> List[str]:
-        if not self._id:
-            return []
-        parts = [p.strip() for p in self._id.split(",") if p.strip()]
-        return sorted(set(parts))
-
-    def getId(self) -> str:
-        ids = self.getIds()
-        return ids[0] if ids else ""
-
-
-class Area(IdentifiableEntity):
-    def __init__(self, id: str = ""):
-        super().__init__(id)
-
-    def getIds(self) -> List[str]:
-        return [self._id] if self._id else []
-
-
-class Category(IdentifiableEntity):
-    def __init__(self, id: str = "", quartile: Optional[str] = None):
-        super().__init__(id)
-        self._quartile: Optional[str] = quartile.strip().upper() if quartile and quartile.strip() else None
-
-    def getQuartile(self) -> Optional[str]:
-        return self._quartile
-
-    def getIds(self) -> List[str]:
-        return [self._id] if self._id else []
-
-
-class Journal(IdentifiableEntity):
-    def __init__(
-        self,
-        id: str = "",
-        title: str = "",
-        publisher: str = "",
-        licence: str = "",
-        apc: Optional[bool] = None,
-        doaj_seal: Optional[bool] = None,
-        languages: Optional[List[str]] = None,
-    ):
-        super().__init__(id)
-        self._title     = str(title).strip()     if title     else ""
-        self._publisher = str(publisher).strip() if publisher else ""
-        self._licence   = str(licence).strip()   if licence   else ""
-        self._apc       = apc
-        self._doaj_seal = doaj_seal
-        self._languages: List[str]   = list(languages) if languages else []
-        self._categories: Dict[str, Category] = {}
-        self._areas:      Dict[str, Area]     = {}
-
-    def getTitle(self) -> str:
-        return self._title
-
-    def getPublisher(self) -> str:
-        return self._publisher
-
-    def getLicence(self) -> str:
-        return self._licence
-
-    def getLicense(self) -> str:
-        return self._licence
-
-    def getName(self) -> str:
-        return self._title
-
-    def hasAPC(self) -> bool:
-        return bool(self._apc)
-
-    def hasDOAJSeal(self) -> bool:
-        return bool(self._doaj_seal)
-
-    def getLanguages(self) -> List[str]:
-        return list(self._languages)
-
-    def getCategories(self) -> List[Category]:
-        return list(self._categories.values())
-
-    def getAreas(self) -> List[Area]:
-        return list(self._areas.values())
-
-    def addCategory(self, cat: Category) -> None:
-        if cat and cat.getId():
-            self._categories[cat.getId()] = cat
-
-    def addArea(self, area: Area) -> None:
-        if area and area.getId():
-            self._areas[area.getId()] = area
-
-    def getIds(self) -> List[str]:
-        if not self._id:
-            return []
-        parts = [p.strip() for p in self._id.split(",") if p.strip()]
-        issn_like = [p for p in parts if re.match(r'^\d{4}-[\dXx]{4}$', p)]
-        return sorted(set(issn_like)) if issn_like else sorted(set(parts))
-
-
-# =============================================================================
-# Handler 基类
-# =============================================================================
-
-class Handler:
-    def __init__(self):
-        self.dbPathOrUrl: str = ""
-
-    def getDbPathOrUrl(self) -> str:
-        return self.dbPathOrUrl
-
-    def setDbPathOrUrl(self, val: str) -> bool:
-        self.dbPathOrUrl = str(val).strip()
-        return True
-
-
-class UploadHandler(Handler):
-    def pushDataToDb(self, file_path: str) -> bool:
-        raise NotImplementedError
-
-
-class QueryHandler(Handler):
-    def getById(self, id: str) -> pd.DataFrame:
-        raise NotImplementedError
-
-
-# =============================================================================
-# Blazegraph 辅助类
-# =============================================================================
-
-def _bool_from_str(v: Any) -> Optional[bool]:
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, str):
-        w = v.strip().lower()
-        if w in {"true", "yes", "y", "1"}:
-            return True
-        if w in {"false", "no", "n", "0"}:
-            return False
-    return None
-
-
-def _build_journal_uri(issn: str) -> URIRef:
-    return URIRef(f"http://example.org/periodical/{issn}")
-
-
-class _BlazegraphClient:
-    def __init__(self, endpoint: str):
-        self.endpoint = endpoint
-
-    def upload_graph(self, g: Graph) -> bool:
-        try:
-            data = g.serialize(format="nt").encode("utf-8")
-            resp = requests.post(
-                self.endpoint,
-                data=data,
-                headers={"Content-Type": "text/plain; charset=utf-8"},
-                timeout=120,
-            )
-            if resp.status_code in (200, 204):
-                return True
-            print(f"[WARN] Blazegraph upload returned {resp.status_code}: {resp.text[:200]}")
-            return False
-        except Exception as exc:
-            print(f"[ERROR] upload_graph: {exc}")
-            traceback.print_exc()
-            return False
-
-    def select(self, query: str) -> List[Dict[str, Any]]:
-        try:
-            store = SPARQLStore(self.endpoint)
-            g = Graph(store=store)
-            rows = []
-            for row in g.query(query):
-                binding = {var: (str(val) if val is not None else None)
-                           for var, val in row.asdict().items()}
-                rows.append(binding)
-            return rows
-        except Exception as exc:
-            print(f"[ERROR] SPARQL select failed: {exc}")
-            return []
-
-
-# =============================================================================
-# 期刊内存缓存（由 JournalUploadHandler 填充）
-# =============================================================================
-
-_JOURNAL_CACHE: Dict[str, pd.DataFrame] = {}
-
-_EMPTY_JOURNAL_DF = pd.DataFrame(
-    columns=["id", "title", "publisher", "licence", "apc", "doaj_seal", "languages"]
-)
-
-
-def _get_cache(endpoint: str) -> pd.DataFrame:
-    return _JOURNAL_CACHE.get(endpoint, _EMPTY_JOURNAL_DF.copy())
-
-
-def _set_cache(endpoint: str, df: pd.DataFrame) -> None:
-    _JOURNAL_CACHE[endpoint] = df.reset_index(drop=True)
-
-
-# =============================================================================
-# JournalUploadHandler  –  CSV -> Blazegraph
-# =============================================================================
-
-class JournalUploadHandler(UploadHandler):
-    def pushDataToDb(self, file_path: str) -> bool:
-        try:
-            if not os.path.isfile(file_path):
-                print(f"[WARN] File not found: {file_path}")
-                _set_cache(self.dbPathOrUrl, _EMPTY_JOURNAL_DF.copy())
-                return False
-
-            df_raw = pd.read_csv(file_path, dtype=str, keep_default_na=False)
-            cols_lower = {c.lower(): c for c in df_raw.columns}
-
-            def pick(*keys):
-                for k in keys:
-                    for low, orig in cols_lower.items():
-                        if k in low:
-                            return orig
-                return None
-
-            col_issn_p = pick("pissn", "print issn", "journal issn")
-            col_issn_e = pick("eissn", "online issn", "electronic issn")
-            col_title  = pick("title")
-            col_pub    = pick("publisher")
-            col_lic    = pick("license", "licence")
-            col_apc    = pick("apc", "article processing")
-            col_seal   = pick("seal", "doaj seal")
-            col_lang   = pick("language")
-
-            g = Graph()
-            g.bind("schema", SCHEMA)
-            cache_rows: List[Dict[str, Any]] = []
-
-            for _, row in df_raw.iterrows():
-                issn_parts: List[str] = []
-                for col in [col_issn_p, col_issn_e]:
-                    if col:
-                        v = str(row[col]).strip()
-                        if v and v.lower() not in ("", "nan", "none"):
-                            issn_parts.append(v)
-                seen: Set[str] = set()
-                unique_issns: List[str] = []
-                for i in issn_parts:
-                    if i not in seen:
-                        seen.add(i)
-                        unique_issns.append(i)
-                issn_parts = unique_issns
-
-                primary_issn = issn_parts[0] if issn_parts else ""
-                all_issns_str = ", ".join(issn_parts)
-
-                title     = str(row[col_title]).strip()  if col_title else ""
-                publisher = str(row[col_pub]).strip()    if col_pub   else ""
-                licence   = str(row[col_lic]).strip()    if col_lic   else ""
-                apc       = _bool_from_str(row[col_apc])  if col_apc   else None
-                seal      = _bool_from_str(row[col_seal]) if col_seal  else None
-                langs_raw = str(row[col_lang]).strip()   if col_lang  else ""
-                languages = [l.strip() for l in langs_raw.split(", ") if l.strip()] if langs_raw else []
-
-                if not primary_issn and not title:
-                    continue
-
-                cache_rows.append({
-                    "id":        all_issns_str or title,
-                    "title":     title,
-                    "publisher": publisher,
-                    "licence":   licence,
-                    "apc":       apc,
-                    "doaj_seal": seal,
-                    "languages": languages,
-                })
-
-                if primary_issn:
-                    s = _build_journal_uri(primary_issn)
-                    g.add((s, RDF.type, SCHEMA.Periodical))
-                    for issn_val in issn_parts:
-                        g.add((s, SCHEMA.issn, Literal(issn_val)))
-                    if title:
-                        g.add((s, SCHEMA.name, Literal(title)))
-                    if publisher:
-                        g.add((s, SCHEMA.publisher, Literal(publisher)))
-                    if licence:
-                        g.add((s, SCHEMA.license, Literal(licence)))
-                    for lang in languages:
-                        g.add((s, SCHEMA.inLanguage, Literal(lang)))
-                    if apc is not None:
-                        pv = URIRef(str(s) + "#pv-apc")
-                        g.add((s, SCHEMA.additionalProperty, pv))
-                        g.add((pv, RDF.type, SCHEMA.PropertyValue))
-                        g.add((pv, SCHEMA.name, Literal("APC")))
-                        g.add((pv, SCHEMA.value, Literal(bool(apc), datatype=XSD.boolean)))
-                    if seal is not None:
-                        pv2 = URIRef(str(s) + "#pv-doaj-seal")
-                        g.add((s, SCHEMA.additionalProperty, pv2))
-                        g.add((pv2, RDF.type, SCHEMA.PropertyValue))
-                        g.add((pv2, SCHEMA.name, Literal("DOAJSeal")))
-                        g.add((pv2, SCHEMA.value, Literal(bool(seal), datatype=XSD.boolean)))
-
-            _BlazegraphClient(self.dbPathOrUrl).upload_graph(g)
-            _set_cache(self.dbPathOrUrl, pd.DataFrame.from_records(cache_rows))
-            return True
-
-        except Exception as exc:
-            print(f"[ERROR] JournalUploadHandler.pushDataToDb: {exc}")
-            traceback.print_exc()
-            _set_cache(self.dbPathOrUrl, _EMPTY_JOURNAL_DF.copy())
-            return False
-
-
-# =============================================================================
-# CategoryUploadHandler  –  JSON -> SQLite
-# =============================================================================
-
-class CategoryUploadHandler(UploadHandler):
-    def pushDataToDb(self, file_path: str) -> bool:
-        if not os.path.isfile(file_path):
-            return False
-        try:
-            with open(file_path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-
-            cat_rows:  List[Dict] = []
-            area_rows: List[Dict] = []
-            link_rows: List[Dict] = []
-
-            for entry in data:
-                identifiers: List[str] = [
-                    str(i).strip()
-                    for i in entry.get("identifiers", [])
-                    if str(i).strip()
-                ]
-                categories = entry.get("categories", [])
-                areas_raw  = entry.get("areas", [])
-                current_areas = [str(a).strip() for a in areas_raw if str(a).strip()]
-
-                for aid in current_areas:
-                    area_rows.append({"id": aid})
-
-                for cat in categories:
-                    cid    = str(cat.get("id", "")).strip()
-                    quart  = str(cat.get("quartile", "")).strip()
-                    if not cid:
-                        continue
-                    cat_rows.append({"id": cid, "quartile": quart})
-
-                    issn_list = identifiers if identifiers else [None]
-                    for issn in issn_list:
-                        if current_areas:
-                            for aid in current_areas:
-                                link_rows.append({
-                                    "issn":     issn,
-                                    "category": cid,
-                                    "area":     aid,
-                                    "quartile": quart,
-                                })
-                        else:
-                            link_rows.append({
-                                "issn":     issn,
-                                "category": cid,
-                                "area":     None,
-                                "quartile": quart,
-                            })
-
-            conn = sqlite3.connect(self.dbPathOrUrl)
-            (pd.DataFrame(cat_rows)
-               .drop_duplicates(subset=["id", "quartile"])
-               .to_sql("categories", conn, if_exists="replace", index=False))
-            (pd.DataFrame(area_rows)
-               .drop_duplicates()
-               .to_sql("areas", conn, if_exists="replace", index=False))
-            (pd.DataFrame(link_rows)
-               .drop_duplicates()
-               .to_sql("links", conn, if_exists="replace", index=False))
-            conn.close()
-            return True
-
-        except Exception as exc:
-            print(f"[ERROR] CategoryUploadHandler.pushDataToDb: {exc}")
-            traceback.print_exc()
-            return False
-
-
-# =============================================================================
-# JournalQueryHandler  –  查询 Blazegraph（本地缓存兜底）
-# =============================================================================
-
-class JournalQueryHandler(QueryHandler):
-    def _cache(self) -> pd.DataFrame:
-        return _get_cache(self.dbPathOrUrl)
-
-    def _client(self) -> _BlazegraphClient:
-        return _BlazegraphClient(self.dbPathOrUrl)
-
-    @staticmethod
-    def _merge_sparql_rows(rows: List[Dict[str, Any]]) -> pd.DataFrame:
-        by_issn: Dict[str, Dict[str, Any]] = {}
-        for r in rows:
-            issn = r.get("issn") or ""
-            if not issn:
-                continue
-            entry = by_issn.setdefault(issn, {
-                "id":        issn,
-                "title":     None,
-                "publisher": None,
-                "licence":   None,
-                "apc":       None,
-                "doaj_seal": None,
-                "languages": [],
-            })
-            if r.get("title"):     entry["title"]     = r["title"]
-            if r.get("publisher"): entry["publisher"] = r["publisher"]
-            if r.get("licence"):   entry["licence"]   = r["licence"]
-            if r.get("apc") is not None:
-                v = str(r["apc"]).strip().lower()
-                entry["apc"] = True if v in ("true", "1") else (False if v in ("false", "0") else None)
-            if r.get("seal") is not None:
-                v = str(r["seal"]).strip().lower()
-                entry["doaj_seal"] = True if v in ("true", "1") else (False if v in ("false", "0") else None)
-            lang = r.get("lang")
-            if lang and lang not in entry["languages"]:
-                entry["languages"].append(lang)
-        df = pd.DataFrame.from_records(list(by_issn.values()))
-        return df.reset_index(drop=True)
-
-    def _sparql_query(self, extra_filter: str = "", limit: Optional[int] = None) -> pd.DataFrame:
-        lim = f"LIMIT {limit}" if limit else ""
-        query = f"""
-        PREFIX schema: <https://schema.org/>
-        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-
-        SELECT ?issn ?title ?publisher ?licence ?apc ?seal ?lang
-        WHERE {{
-            ?s a schema:Periodical ;
-               schema:issn ?issn .
-            OPTIONAL {{ ?s schema:name       ?title . }}
-            OPTIONAL {{ ?s schema:publisher  ?publisher . }}
-            OPTIONAL {{ ?s schema:license    ?licence . }}
-            OPTIONAL {{ ?s schema:inLanguage ?lang . }}
-            OPTIONAL {{
-                ?s schema:additionalProperty ?pv1 .
-                ?pv1 schema:name  "APC" .
-                ?pv1 schema:value ?apc .
-            }}
-            OPTIONAL {{
-                ?s schema:additionalProperty ?pv2 .
-                ?pv2 schema:name  "DOAJSeal" .
-                ?pv2 schema:value ?seal .
-            }}
-            {extra_filter}
-        }}
-        {lim}
-        """
-        rows = self._client().select(query)
-        return self._merge_sparql_rows(rows)
-
-    def _filter_cache(self, cache: pd.DataFrame, filter_type: str, value: Any = None) -> pd.DataFrame:
-        df = cache.copy()
-        if filter_type == "all":
-            pass
-        elif filter_type == "issn_exact":
-            term = str(value).strip().lower()
-            df = df[df["id"].astype(str).apply(
-                lambda cell: any(p.strip().lower() == term for p in cell.split(","))
-            )]
-        elif filter_type == "title_contains":
-            term = str(value).strip().lower()
-            df = df[df["title"].astype(str).str.lower().str.contains(term, na=False)]
-        elif filter_type == "publisher_contains":
-            term = str(value).strip().lower()
-            df = df[df["publisher"].astype(str).str.lower().str.contains(term, na=False)]
-        elif filter_type == "license_in":
-            lc_set = {str(l).strip().lower() for l in value}
-            df = df[df["licence"].astype(str).str.strip().str.lower().isin(lc_set)]
-        elif filter_type == "apc_true":
-            df = df[df["apc"] == True]
-        elif filter_type == "seal_true":
-            df = df[df["doaj_seal"] == True]
-        else:
-            df = pd.DataFrame()
-        return df.reset_index(drop=True)
-
-    def _query(self, filter_type: str, value: Any = None,
-               sparql_filter: str = "") -> pd.DataFrame:
-        cache = self._cache()
-        if not cache.empty:
-            return self._filter_cache(cache, filter_type, value)
-        df = self._sparql_query(sparql_filter)
-        if filter_type != "all":
-            df = self._filter_cache(df, filter_type, value)
-        return df
-
-    def getById(self, id: str) -> pd.DataFrame:
-        return self._query(
-            "issn_exact", id,
-            sparql_filter=f'FILTER (LCASE(STR(?issn)) = LCASE("{id}"))',
-        )
-
-    def getAllJournals(self) -> pd.DataFrame:
-        return self._query("all", sparql_filter="")
-
-    def getJournalsWithTitle(self, partial_title: str) -> pd.DataFrame:
-        return self._query(
-            "title_contains", partial_title,
-            sparql_filter=f'FILTER (BOUND(?title) && CONTAINS(LCASE(STR(?title)), LCASE("{partial_title}")))',
-        )
-
-    def getJournalsPublishedBy(self, partial_name: str) -> pd.DataFrame:
-        return self._query(
-            "publisher_contains", partial_name,
-            sparql_filter=f'FILTER (BOUND(?publisher) && CONTAINS(LCASE(STR(?publisher)), LCASE("{partial_name}")))',
-        )
-
-    def getJournalsWithLicense(self, licenses: Set[str]) -> pd.DataFrame:
-        if not licenses:
-            return self.getAllJournals()
-        return self._query(
-            "license_in", licenses,
-            sparql_filter=(
-                "FILTER (BOUND(?licence) && ("
-                + " || ".join(f'LCASE(STR(?licence)) = LCASE("{l}")' for l in licenses)
-                + "))"
-            ),
-        )
-
-    def getJournalsWithAPC(self) -> pd.DataFrame:
-        return self._query(
-            "apc_true",
-            sparql_filter='FILTER (BOUND(?apc) && STR(?apc) = "true")',
-        )
-
-    def getJournalsWithDOAJSeal(self) -> pd.DataFrame:
-        return self._query(
-            "seal_true",
-            sparql_filter='FILTER (BOUND(?seal) && STR(?seal) = "true")',
-        )
-
-
-# =============================================================================
-# CategoryQueryHandler  –  查询 SQLite
-# =============================================================================
-
-class CategoryQueryHandler(QueryHandler):
-    def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.dbPathOrUrl)
-
-    def _sql(self, query: str, params: tuple = ()) -> pd.DataFrame:
-        try:
-            conn = self._conn()
-            df = pd.read_sql_query(query, conn, params=params)
-            conn.close()
-            return df
-        except Exception as exc:
-            print(f"[ERROR] CategoryQueryHandler SQL: {exc}")
-            return pd.DataFrame()
-
-    def _links(self) -> pd.DataFrame:
-        return self._sql("SELECT * FROM links")
-
-    def getById(self, id: str) -> pd.DataFrame:
-        df = self._sql("SELECT id, quartile FROM categories WHERE id = ?", (id,))
-        if not df.empty:
-            return df
-        df = self._sql("SELECT id FROM areas WHERE id = ?", (id,))
-        return df
-
-    def getAllCategories(self) -> pd.DataFrame:
-        df = self._sql("SELECT id, MIN(quartile) AS quartile FROM categories GROUP BY id")
-        return df.drop_duplicates(subset=["id"]).reset_index(drop=True)
-
-    def getAllAreas(self) -> pd.DataFrame:
-        df = self._sql("SELECT DISTINCT id FROM areas")
-        return df.drop_duplicates().reset_index(drop=True)
-
-    def getCategoriesWithQuartile(self, quartiles: Set[str]) -> pd.DataFrame:
-        if not quartiles:
-            return self.getAllCategories()
-        wanted = {q.strip().upper() for q in quartiles}
-        df_all = self._sql("SELECT id, quartile FROM categories")
-        if df_all.empty:
-            return pd.DataFrame()
-        mask = df_all["quartile"].astype(str).str.strip().str.upper().isin(wanted)
-        return (
-            df_all.loc[mask]
-            .drop_duplicates(subset=["id"])
-            .reset_index(drop=True)
-        )
-
-    def getCategoriesAssignedToAreas(self, area_ids: Set[str]) -> pd.DataFrame:
-        ldf = self._links()
-        if ldf.empty:
-            return pd.DataFrame(columns=["id", "quartile"])
-        if area_ids:
-            norm = {a.strip().lower() for a in area_ids}
-            ldf = ldf[ldf["area"].astype(str).str.strip().str.lower().isin(norm)]
-        cats = ldf[ldf["category"].notna()][["category", "quartile"]].copy()
-        cats = cats.rename(columns={"category": "id"})
-        return cats.drop_duplicates(subset=["id"]).reset_index(drop=True)
-
-    def getAreasAssignedToCategories(self, category_ids: Set[str]) -> pd.DataFrame:
-        ldf = self._links()
-        if ldf.empty:
-            return pd.DataFrame(columns=["id"])
-        if category_ids:
-            norm = {c.strip().lower() for c in category_ids}
-            ldf = ldf[ldf["category"].astype(str).str.strip().str.lower().isin(norm)]
-        areas = ldf[ldf["area"].notna()][["area"]].copy()
-        areas = areas.rename(columns={"area": "id"})
-        return areas.drop_duplicates().reset_index(drop=True)
-
-
-# =============================================================================
-# BasicQueryEngine
-# =============================================================================
-
-class BasicQueryEngine:
-    def __init__(self):
-        self.journalQuery:  List[JournalQueryHandler]  = []
-        self.categoryQuery: List[CategoryQueryHandler] = []
-
-    def cleanJournalHandlers(self) -> bool:
-        self.journalQuery.clear()
-        return True
-
-    def cleanCategoryHandlers(self) -> bool:
-        self.categoryQuery.clear()
-        return True
-
-    def addJournalHandler(self, handler: JournalQueryHandler) -> bool:
-        if handler and handler not in self.journalQuery:
-            self.journalQuery.append(handler)
-            return True
-        return False
-
-    def addCategoryHandler(self, handler: CategoryQueryHandler) -> bool:
-        if handler and handler not in self.categoryQuery:
-            self.categoryQuery.append(handler)
-            return True
-        return False
-
-    @staticmethod
-    def _combine_dfs(frames: List[pd.DataFrame]) -> pd.DataFrame:
-        valid = [f for f in frames if isinstance(f, pd.DataFrame) and not f.empty]
-        if not valid:
-            return pd.DataFrame()
-        df = pd.concat(valid, ignore_index=True)
-        list_cols = [c for c in df.columns if df[c].apply(lambda v: isinstance(v, list)).any()]
-        for c in list_cols:
-            df[c] = df[c].apply(lambda v: json.dumps(v, ensure_ascii=False) if isinstance(v, list) else v)
-        df = df.drop_duplicates(ignore_index=True)
-        for c in list_cols:
-            df[c] = df[c].apply(lambda v: json.loads(v) if isinstance(v, str) and v.startswith("[") else v)
-        return df
-
-    def _parse_languages(self, val: Any) -> List[str]:
-        if isinstance(val, list):
-            return [v.strip() for v in val if isinstance(v, str) and v.strip()]
-        if isinstance(val, str):
-            return [v.strip() for v in val.split(", ") if v.strip()]
-        return []
-
-    def _row_to_journal(self, row: pd.Series) -> Journal:
-        raw_id = str(row.get("id", "")).strip()
-        return Journal(
-            id=raw_id,
-            title=str(row.get("title", "")).strip(),
-            publisher=str(row.get("publisher", "")).strip(),
-            licence=str(row.get("licence", "")).strip(),
-            apc=self._coerce_bool(row.get("apc")),
-            doaj_seal=self._coerce_bool(row.get("doaj_seal")),
-            languages=self._parse_languages(row.get("languages")),
-        )
-
-    @staticmethod
-    def _coerce_bool(val: Any) -> Optional[bool]:
-        if isinstance(val, bool):
-            return val
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            return None
-        s = str(val).strip().lower()
-        if s in {"true", "yes", "1", "t", "y"}:
-            return True
-        if s in {"false", "no", "0", "f", "n", ""}:
-            return False
-        return None
-
-    def _df_to_journals(self, df: pd.DataFrame) -> List[Journal]:
-        if df is None or df.empty:
-            return []
-        if "id" in df.columns:
-            df = df.drop_duplicates(subset=["id"]).reset_index(drop=True)
-        return [self._row_to_journal(row) for _, row in df.iterrows()]
-
-    def _df_to_categories(self, df: pd.DataFrame) -> List[Category]:
-        if df is None or df.empty:
-            return []
-        id_col = "id" if "id" in df.columns else (
-            "category_id" if "category_id" in df.columns else None
-        )
-        if id_col is None:
-            return []
-        seen: Set[str] = set()
-        result: List[Category] = []
-        for _, row in df.iterrows():
-            cid = str(row[id_col]).strip()
-            if not cid or cid in seen:
-                continue
-            seen.add(cid)
-            q = row.get("quartile", None)
-            result.append(Category(id=cid, quartile=q if q and str(q).strip() else None))
-        return result
-
-    def _df_to_areas(self, df: pd.DataFrame) -> List[Area]:
-        if df is None or df.empty:
-            return []
-        id_col = "id" if "id" in df.columns else (
-            "area_id" if "area_id" in df.columns else None
-        )
-        if id_col is None:
-            return []
-        seen: Set[str] = set()
-        result: List[Area] = []
-        for _, row in df.iterrows():
-            aid = str(row[id_col]).strip()
-            if not aid or aid in seen:
-                continue
-            seen.add(aid)
-            result.append(Area(id=aid))
-        return result
-
-    def getEntityById(self, identifier: str) -> Optional[IdentifiableEntity]:
-        if not identifier:
-            return None
-        target = str(identifier).strip()
-
-        for h in self.journalQuery:
-            try:
-                df = h.getById(target)
-                if isinstance(df, pd.DataFrame) and not df.empty:
-                    j = self._row_to_journal(df.iloc[0])
-                    for issn in j.getIds():
-                        for ch in self.categoryQuery:
-                            try:
-                                ldf = ch._links()
-                                if ldf.empty:
-                                    continue
-                                norm_issn = issn.strip().lower()
-                                matching = ldf[
-                                    ldf["issn"].astype(str).str.strip().str.lower() == norm_issn
-                                ]
-                                for cat_id in matching["category"].dropna().unique():
-                                    q_rows = matching.loc[
-                                        matching["category"] == cat_id, "quartile"
-                                    ].dropna()
-                                    q_val = q_rows.iloc[0] if not q_rows.empty else None
-                                    j.addCategory(Category(id=str(cat_id), quartile=q_val))
-                                for area_id in matching["area"].dropna().unique():
-                                    j.addArea(Area(id=str(area_id)))
-                            except Exception:
-                                pass
-                    return j
-            except Exception:
-                pass
-
-        for h in self.categoryQuery:
-            try:
-                df = h.getAllCategories()
-                if not df.empty:
-                    id_col = "id" if "id" in df.columns else "category_id"
-                    row = df[df[id_col].astype(str).str.strip() == target]
-                    if not row.empty:
-                        q = row.iloc[0].get("quartile", None)
-                        return Category(id=target, quartile=q if q and str(q).strip() else None)
-            except Exception:
-                pass
-
-        for h in self.categoryQuery:
-            try:
-                df = h.getAllAreas()
-                if not df.empty:
-                    id_col = "id" if "id" in df.columns else "area_id"
-                    row = df[df[id_col].astype(str).str.strip() == target]
-                    if not row.empty:
-                        return Area(id=target)
-            except Exception:
-                pass
-
-        return None
-
-    def getAllJournals(self) -> List[Journal]:
-        df = self._combine_dfs([h.getAllJournals() for h in self.journalQuery])
-        return self._df_to_journals(df)
-
-    def getJournalsWithTitle(self, partial_title: str) -> List[Journal]:
-        df = self._combine_dfs([h.getJournalsWithTitle(partial_title) for h in self.journalQuery])
-        return self._df_to_journals(df)
-
-    def getJournalsPublishedBy(self, partial_name: str) -> List[Journal]:
-        df = self._combine_dfs([h.getJournalsPublishedBy(partial_name) for h in self.journalQuery])
-        return self._df_to_journals(df)
-
-    def getJournalsWithLicense(self, licenses: Set[str]) -> List[Journal]:
-        df = self._combine_dfs([h.getJournalsWithLicense(licenses) for h in self.journalQuery])
-        return self._df_to_journals(df)
-
-    def getJournalsWithAPC(self) -> List[Journal]:
-        df = self._combine_dfs([h.getJournalsWithAPC() for h in self.journalQuery])
-        return self._df_to_journals(df)
-
-    def getJournalsWithDOAJSeal(self) -> List[Journal]:
-        df = self._combine_dfs([h.getJournalsWithDOAJSeal() for h in self.journalQuery])
-        return self._df_to_journals(df)
-
-    def getAllCategories(self) -> List[Category]:
-        df = self._combine_dfs([h.getAllCategories() for h in self.categoryQuery])
-        return self._df_to_categories(df)
-
-    def getAllAreas(self) -> List[Area]:
-        df = self._combine_dfs([h.getAllAreas() for h in self.categoryQuery])
-        return self._df_to_areas(df)
-
-    def getCategoriesWithQuartile(self, quartiles: Set[str]) -> List[Category]:
-        df = self._combine_dfs([h.getCategoriesWithQuartile(quartiles) for h in self.categoryQuery])
-        return self._df_to_categories(df)
-
-    def getCategoriesAssignedToAreas(self, area_ids: Set[str]) -> List[Category]:
-        df = self._combine_dfs([h.getCategoriesAssignedToAreas(area_ids) for h in self.categoryQuery])
-        return self._df_to_categories(df)
-
-    def getAreasAssignedToCategories(self, category_ids: Set[str]) -> List[Area]:
-        df = self._combine_dfs([h.getAreasAssignedToCategories(category_ids) for h in self.categoryQuery])
-        return self._df_to_areas(df)
-
-
-# =============================================================================
-# FullQueryEngine  –  跨源聚合查询
-# =============================================================================
-
-class FullQueryEngine(BasicQueryEngine):
-    def _all_links(self) -> pd.DataFrame:
-        frames = [h._links() for h in self.categoryQuery if isinstance(h, CategoryQueryHandler)]
-        return self._combine_dfs(frames)
-
-    def _all_journals_df(self) -> pd.DataFrame:
-        return self._combine_dfs([h.getAllJournals() for h in self.journalQuery])
-
-    def _issns_for_categories_quartiles(
-        self, category_ids: Set[str], quartiles: Set[str]
-    ) -> Set[str]:
-        ldf = self._all_links()
-        if ldf.empty:
-            return set()
-
-        norm_cats = {c.strip().lower() for c in category_ids} if category_ids else None
-        norm_qs   = {q.strip().upper() for q in quartiles}   if quartiles   else None
-
-        mask = pd.Series([True] * len(ldf), index=ldf.index)
-        if norm_cats is not None:
-            mask &= ldf["category"].astype(str).str.strip().str.lower().isin(norm_cats)
-        if norm_qs is not None:
-            mask &= ldf["quartile"].astype(str).str.strip().str.upper().isin(norm_qs)
-
-        matched = ldf.loc[mask, "issn"].dropna().astype(str).str.strip()
-        return {v for v in matched if v}
-
-    def _issns_for_areas(self, area_ids: Set[str]) -> Set[str]:
-        ldf = self._all_links()
-        if ldf.empty:
-            return set()
-
-        norm_areas = {a.strip().lower() for a in area_ids} if area_ids else None
-
-        mask = pd.Series([True] * len(ldf), index=ldf.index)
-        if norm_areas is not None:
-            mask &= ldf["area"].astype(str).str.strip().str.lower().isin(norm_areas)
-
-        matched = ldf.loc[mask, "issn"].dropna().astype(str).str.strip()
-        return {v for v in matched if v}
-
-    def _journals_with_issns(
-        self, jdf: pd.DataFrame, issn_set: Set[str]
-    ) -> List[Journal]:
-        if jdf.empty or not issn_set:
-            return []
-        norm_issns = {i.strip().lower() for i in issn_set}
-
-        def row_matches(cell: str) -> bool:
-            return any(
-                p.strip().lower() in norm_issns
-                for p in str(cell).split(",")
-            )
-
-        mask = jdf["id"].apply(row_matches)
-        matched = jdf.loc[mask].drop_duplicates(subset=["id"]).reset_index(drop=True)
-        return self._df_to_journals(matched)
-
-    def getJournalsInCategoriesWithQuartile(
-        self, categories: Set[str], quartiles: Set[str]
-    ) -> List[Journal]:
-        issns = self._issns_for_categories_quartiles(categories, quartiles)
-        if not issns:
-            return []
-        jdf = self._all_journals_df()
-        return self._journals_with_issns(jdf, issns)
-
-    def getJournalsInAreasWithLicense(
-        self, areas: Set[str], licenses: Set[str]
-    ) -> List[Journal]:
-        area_issns = self._issns_for_areas(areas)
-        if not area_issns and areas:
-            return []
-
-        lic_frames = [h.getJournalsWithLicense(licenses) for h in self.journalQuery]
-        lic_df = self._combine_dfs(lic_frames)
-        if lic_df.empty:
-            return []
-
-        if area_issns:
-            return self._journals_with_issns(lic_df, area_issns)
-        else:
-            return self._df_to_journals(lic_df)
-
-    def getDiamondJournalsInAreasAndCategoriesWithQuartile(
-        self, areas: Set[str], categories: Set[str], quartiles: Set[str]
-    ) -> List[Journal]:
-        # 标记用户是否真正传入了过滤条件
-        has_area_filter = bool(areas)
-        has_catq_filter = bool(categories or quartiles)
-
-        area_issns = self._issns_for_areas(areas)
-        catq_issns = self._issns_for_categories_quartiles(categories, quartiles)
-
-        # 若用户明确传了条件但查不到任何匹配ISSN，说明条件不命中，直接返回空
-        if has_area_filter and not area_issns:
-            return []
-        if has_catq_filter and not catq_issns:
-            return []
-
-        # 组合ISSN集合：按用户实际传入的条件进行交集/并集
-        if has_area_filter and has_catq_filter:
-            combined_issns = area_issns.intersection(catq_issns)
-        elif has_area_filter:
-            combined_issns = area_issns
-        elif has_catq_filter:
-            combined_issns = catq_issns
-        else:
-            combined_issns = set()
-
-        jdf = self._all_journals_df()
-        if jdf.empty:
-            return []
-
-        # 核心修复：区分「用户传了条件但交集为空（应返回[]）」
-        # 与「用户没传任何条件（应返回全部）」
-        if has_area_filter or has_catq_filter:
-            # 用户至少传了一个条件，用组合后的ISSN严格过滤
-            journals = self._journals_with_issns(jdf, combined_issns)
-        else:
-            # 用户未传任何条件，返回全部期刊
-            journals = self._df_to_journals(jdf)
-
-        return [j for j in journals if j._apc is False]
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hard Roads in Shu | Digital Humanities Project</title>
+    <meta name="description" content="A digital humanities project exploring Li Bai's 'Hard Roads in Shu' through geographic visualization, bilingual reading, and interactive mapping.">
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        /* ── Author Bio Box ── */
+        .author-bio {
+            margin-top: 2rem;
+            padding: 1.5rem 2rem;
+            background: linear-gradient(135deg, rgba(184,149,106,0.08) 0%, rgba(184,62,47,0.05) 100%);
+            border-left: 4px solid var(--gold);
+            border-radius: 0 8px 8px 0;
+        }
+        .author-bio h4 {
+            color: var(--gold);
+            font-size: 1rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-bottom: 0.8rem;
+        }
+        .author-bio p {
+            font-size: 0.97rem;
+            color: var(--ink-gray);
+            line-height: 1.8;
+            margin: 0;
+        }
+
+        /* ── Tripartite Reader ── */
+        .section-dark .reading-container-tri {
+            display: grid;
+            grid-template-columns: 1fr 1.4fr 0.8fr;
+            gap: 0;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+            min-height: 780px;
+            /* 移除 max-height 限制，允许内容自然展开并可滚动 */
+        }
+
+        /* Left: Manuscript panel */
+        .panel-manuscript {
+            background: #1c1a14;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            border-right: 1px solid rgba(184,149,106,0.25);
+            min-height: 780px;
+            max-height: 85vh;
+        }
+        .panel-manuscript .panel-header {
+            background: rgba(184,149,106,0.12);
+            padding: 1rem 1.2rem;
+            border-bottom: 1px solid rgba(184,149,106,0.25);
+            flex-shrink: 0;
+        }
+        .panel-manuscript .panel-header h3 {
+            color: var(--gold);
+            font-size: 0.78rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            margin: 0 0 0.15rem 0;
+        }
+        .panel-manuscript .panel-header p {
+            color: rgba(245,240,232,0.45);
+            font-size: 0.72rem;
+            margin: 0;
+        }
+        .manuscript-viewer {
+            flex: 1;
+            overflow: hidden;
+            position: relative;
+            cursor: grab;
+            background: #0d0c09;
+        }
+        .manuscript-viewer:active { cursor: grabbing; }
+        .manuscript-viewer img {
+            display: block;
+            transform-origin: 0 0;
+            user-select: none;
+            pointer-events: none;
+            max-width: none;
+        }
+        .zoom-controls {
+            position: absolute;
+            bottom: 14px;
+            right: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            z-index: 10;
+        }
+        .zoom-btn {
+            width: 32px;
+            height: 32px;
+            background: rgba(184,149,106,0.85);
+            color: #1a1a1a;
+            border: none;
+            border-radius: 4px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+            font-weight: bold;
+        }
+        .zoom-btn:hover { background: var(--gold); }
+        .zoom-label {
+            text-align: center;
+            color: rgba(245,240,232,0.55);
+            font-size: 0.68rem;
+            background: rgba(0,0,0,0.4);
+            border-radius: 3px;
+            padding: 2px 4px;
+        }
+
+        /* Middle: Textual Collation panel */
+        .panel-collation {
+            background: #f5f0e8;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid rgba(184,149,106,0.3);
+            overflow: hidden;
+            min-height: 780px;
+            max-height: 85vh;
+        }
+        .panel-collation .panel-header {
+            background: rgba(184,149,106,0.12);
+            padding: 1rem 1.4rem;
+            border-bottom: 2px solid rgba(184,149,106,0.35);
+            flex-shrink: 0;
+        }
+        .panel-collation .panel-header h3 {
+            color: var(--cinnabar);
+            font-size: 0.78rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            margin: 0 0 0.15rem 0;
+        }
+        .panel-collation .panel-header p {
+            color: var(--ink-light);
+            font-size: 0.72rem;
+            margin: 0;
+        }
+        .collation-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem 1.6rem;
+        }
+        .collation-verse {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.7rem;
+            padding: 0.8rem 0.9rem;
+            border-radius: 6px;
+            margin-bottom: 0.3rem;
+            transition: background 0.25s;
+            cursor: pointer;
+        }
+        .collation-verse:hover { background: rgba(184,149,106,0.1); }
+        .collation-verse.active { background: rgba(184,62,47,0.08); border-left: 3px solid var(--cinnabar); padding-left: 0.6rem; }
+        .v-num {
+            flex-shrink: 0;
+            width: 22px;
+            height: 22px;
+            background: var(--gold);
+            color: #fff;
+            font-size: 0.68rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 3px;
+        }
+        .v-text {
+            font-family: 'Noto Serif SC', serif;
+            font-size: 1.08rem;
+            line-height: 2;
+            color: var(--ink-black);
+        }
+        /* Deletion markup */
+        .del-char {
+            text-decoration: line-through;
+            text-decoration-color: var(--cinnabar);
+            text-decoration-thickness: 2px;
+            color: #999;
+        }
+        /* Insertion above */
+        .ins-wrapper {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            vertical-align: bottom;
+            line-height: 1.1;
+            margin: 0 1px;
+        }
+        .ins-new {
+            font-size: 0.75em;
+            color: var(--cinnabar);
+            font-weight: 600;
+            line-height: 1;
+            margin-bottom: 1px;
+            letter-spacing: 0.05em;
+        }
+        .ins-old {
+            font-size: 1em;
+            text-decoration: line-through;
+            text-decoration-color: var(--cinnabar);
+            text-decoration-thickness: 1.5px;
+            color: #aaa;
+        }
+        /* English translation stripe at bottom */
+        .collation-en {
+            font-style: italic;
+            font-size: 0.82rem;
+            color: var(--ink-light);
+            padding-left: 1.6rem;
+            margin-top: 0.15rem;
+            line-height: 1.6;
+        }
+
+        /* Right: Metadata panel */
+        .panel-metadata {
+            background: #1c1a14;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 780px;
+            max-height: 85vh;
+        }
+        .panel-metadata .panel-header {
+            background: rgba(184,149,106,0.12);
+            padding: 1rem 1.2rem;
+            border-bottom: 1px solid rgba(184,149,106,0.25);
+            flex-shrink: 0;
+        }
+        .panel-metadata .panel-header h3 {
+            color: var(--gold);
+            font-size: 0.78rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            margin: 0 0 0.15rem 0;
+        }
+        .panel-metadata .panel-header p {
+            color: rgba(245,240,232,0.45);
+            font-size: 0.72rem;
+            margin: 0;
+        }
+        .metadata-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.4rem 1.3rem;
+        }
+        .meta-block {
+            margin-bottom: 1.5rem;
+            padding-bottom: 1.3rem;
+            border-bottom: 1px solid rgba(184,149,106,0.18);
+        }
+        .meta-block:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        .meta-label {
+            font-size: 0.68rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--gold);
+            margin-bottom: 0.35rem;
+        }
+        .meta-value {
+            color: rgba(245,240,232,0.82);
+            font-size: 0.88rem;
+            line-height: 1.7;
+        }
+        .meta-value .zh {
+            font-family: 'Noto Serif SC', serif;
+            font-size: 1.05em;
+            color: rgba(245,240,232,0.65);
+            display: block;
+            margin-top: 0.15rem;
+        }
+        .meta-source-box {
+            background: rgba(184,149,106,0.1);
+            border: 1px solid rgba(184,149,106,0.25);
+            border-radius: 6px;
+            padding: 0.9rem 1rem;
+            margin-top: 0.4rem;
+        }
+        .meta-source-box p {
+            color: rgba(245,240,232,0.75);
+            font-size: 0.82rem;
+            line-height: 1.75;
+            margin: 0;
+        }
+        .meta-source-box p .zh {
+            font-family: 'Noto Serif SC', serif;
+            color: var(--gold);
+        }
+
+        /* Responsive for tripartite reader */
+        @media (max-width: 1024px) {
+            .reading-container-tri {
+                grid-template-columns: 1fr !important;
+                max-height: none !important;
+            }
+            .panel-manuscript, .panel-collation, .panel-metadata {
+                min-height: 420px;
+                max-height: none;
+            }
+        }
+
+        /* Scrollbar inside panels */
+        .collation-scroll::-webkit-scrollbar,
+        .metadata-scroll::-webkit-scrollbar,
+        .manuscript-viewer::-webkit-scrollbar { width: 5px; }
+        .collation-scroll::-webkit-scrollbar-track { background: var(--paper-dark); }
+        .collation-scroll::-webkit-scrollbar-thumb { background: var(--gold); border-radius: 3px; }
+        .metadata-scroll::-webkit-scrollbar-track { background: #111; }
+        .metadata-scroll::-webkit-scrollbar-thumb { background: rgba(184,149,106,0.5); border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="navbar-content">
+            <a href="#home" class="logo">蜀道难 <span>|</span> Hard Roads in Shu</a>
+            <ul class="nav-links" id="navLinks">
+                <li><a href="#home" class="active">Home</a></li>
+                <li><a href="#reading">Reading</a></li>
+                <li><a href="#map">Map</a></li>
+                <li><a href="#future">Future</a></li>
+                <li><a href="#about">About Us</a></li>
+            </ul>
+            <div class="menu-toggle" id="menuToggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section id="home" class="hero">
+        <div class="hero-bg"></div>
+        <div class="hero-overlay"></div>
+        <div class="hero-content">
+            <span class="hero-tag">DIGITAL HUMANITIES PROJECT</span>
+            <h1 class="hero-title chinese-text">蜀道难</h1>
+            <p class="hero-subtitle">Li Bai (701-762) · Tang Dynasty</p>
+            <p class="hero-quote">"蜀道之难，难于上青天"</p>
+            <p class="hero-quote-en">"The road to Shu is harder than climbing to the blue sky"</p>
+            <a href="#background" class="btn-explore">Begin Exploration</a>
+        </div>
+    </section>
+
+    <!-- Project Background Section -->
+    <section id="background" class="section">
+        <div class="section-header reveal">
+            <span class="section-tag">PROJECT BACKGROUND</span>
+            <h2 class="section-title">The Story Behind the Poem</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc">
+                Written during the Tianbao era (745-746 CE), "Hard Roads in Shu" reflects Li Bai's profound observation of political turmoil and personal struggle.
+            </p>
+        </div>
+        
+        <div class="bg-content">
+            <div class="bg-text reveal">
+                <h3>Historical Context</h3>
+                <p>
+                    The Tang Dynasty appeared prosperous on the surface, but beneath lay hidden crises. Emperor Xuanzong had grown indulgent in pleasure and neglected state affairs, delegating power to Chancellor Li Linfu. Regional military governors were gradually expanding their influence, and the Shu region's strategic location made it a coveted prize for warlords.
+                </p>
+                <p>
+                    Li Bai, with his keen political insight, perceived the looming threat of regional separatism. The treacherous mountain paths described in his poem became a metaphor for the dangerous political landscape of his time.
+                </p>
+                <p>
+                    Having been expelled from the capital due to his proud nature and conflicts with powerful officials, Li Bai channeled his frustration over thwarted ambitions into this masterpiece. The poem serves as both a personal lament and a veiled warning to the court about the vulnerability of Shu.
+                </p>
+                
+                <h3 style="margin-top: 2rem;">Literary Significance</h3>
+                <p>
+                    With its dramatic imagery, musical rhythm, and profound symbolism, "Hard Roads in Shu" stands as one of the greatest works in Chinese literature. The poem's famous opening line has become a proverb expressing the difficulty of any challenging endeavor.
+                </p>
+
+                <!-- Author Biography -->
+                <div class="author-bio">
+                    <h4>About the Author — Li Bai (李白)</h4>
+                    <p>
+                        Li Bai (701–762 CE), courtesy name Taibai, was one of the greatest poets of the Tang Dynasty and is widely regarded as the foremost romantic poet in Chinese literary history. Born in Central Asia and raised in Sichuan, he spent much of his life as a wandering poet and scholar. Known as the "Immortal Poet" (<em>Shixian</em>), Li Bai was celebrated for his extraordinary imagination, bold imagery, and unrestrained spirit. He briefly served at the imperial court of Emperor Xuanzong around 742 CE but was dismissed due to his unconventional temperament. His work, comprising over a thousand surviving poems, reflects themes of nature, friendship, wine, longing, and political disillusionment. "Hard Roads in Shu" stands as one of his most technically dazzling and emotionally charged masterpieces.
+                    </p>
+                </div>
+            </div>
+            
+            <div class="bg-image reveal">
+                <img src="images/libai-portrait.jpg" alt="Portrait of Li Bai">
+                <div class="bg-image-caption">
+                    <h4 class="chinese-text">李白 Li Bai</h4>
+                    <p>701-762 CE · The "Immortal Poet" of the Tang Dynasty</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Reading Section -->
+    <section id="reading" class="section section-dark" style="max-width:100%; padding: 5rem 2rem;">
+        <div class="section-header reveal">
+            <span class="section-tag">BILINGUAL READER</span>
+            <h2 class="section-title">Parallel Reading Experience</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc" style="color:rgba(245,240,232,0.65);">
+                Explore Li Bai's masterpiece through the Song-dynasty annotated manuscript, textual collation with variant markings, and an English translation. Drag the manuscript to pan; use the ＋／－ buttons to zoom.
+            </p>
+        </div>
+
+        <div class="reading-container-tri reveal" style="max-width:1320px; margin:0 auto;">
+
+            <!-- LEFT: Manuscript Viewer -->
+            <div class="panel-manuscript">
+                <div class="panel-header">
+                    <h3>Manuscript</h3>
+                    <p>Song Dynasty annotated edition — drag &amp; zoom</p>
+                </div>
+                <div class="manuscript-viewer" id="manuscriptViewer">
+                    <img id="manuscriptImg" src="images/shudaonan manuscript.jpg" alt="Song-dynasty annotated manuscript of Hard Roads in Shu" draggable="false">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" id="zoomIn" title="Zoom in">＋</button>
+                        <div class="zoom-label" id="zoomLabel">100%</div>
+                        <button class="zoom-btn" id="zoomOut" title="Zoom out">－</button>
+                        <button class="zoom-btn" id="zoomReset" title="Reset" style="font-size:0.8rem;">↺</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MIDDLE: Textual Collation + English -->
+            <div class="panel-collation">
+                <div class="panel-header">
+                    <h3>Textual Collation · 異文比對</h3>
+                    <p>Strikethrough = variant deleted; red superscript = revised reading · scroll for English translation</p>
+                </div>
+                <div class="collation-scroll" id="collationPanel">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- RIGHT: Metadata -->
+            <div class="panel-metadata">
+                <div class="panel-header">
+                    <h3>Metadata</h3>
+                    <p>Bibliographic information</p>
+                </div>
+                <div class="metadata-scroll">
+                    <div class="meta-block">
+                        <div class="meta-label">Author</div>
+                        <div class="meta-value">
+                            Li Bai (李白)
+                            <span class="zh">李白，字太白，號青蓮居士</span>
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Title</div>
+                        <div class="meta-value">
+                            Hard Roads in Shu
+                            <span class="zh">蜀道難</span>
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Date of Composition</div>
+                        <div class="meta-value">c. 742–744 CE<br><span style="color:rgba(245,240,232,0.5); font-size:0.82em;">Tianbao reign period, Tang Dynasty</span></div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Form / Genre</div>
+                        <div class="meta-value">
+                            Ancient Ballad (<em>gǔ yuèfǔ</em>)
+                            <span class="zh">古樂府</span>
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Collected In</div>
+                        <div class="meta-value" style="font-size:0.85rem; line-height:1.75;">
+                            <em>Classified and Supplementary Annotations to the Poetry of Li Taibai</em>, fascicle 3 ("Ancient Ballads")
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">Manuscript Source</div>
+                        <div class="meta-source-box">
+                            <p>
+                                <span class="zh">南宋·楊齊賢（集註）</span><br>
+                                <span class="zh">元·蕭士贇（補註）</span><br>
+                                <span class="zh">本《分類補註李太白詩·卷之三·古樂府》</span>
+                            </p>
+                        </div>
+                    </div>
+                    <div class="meta-block">
+                        <div class="meta-label">English Translation</div>
+                        <div class="meta-value" style="font-size:0.85rem;">
+                            Witter Bynner (1929)<br>
+                            <span style="color:rgba(245,240,232,0.45); font-size:0.9em;"><em>The Jade Mountain: A Chinese Anthology</em></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- .reading-container-tri -->
+    </section>
+
+    <!-- Map Section -->
+    <section id="map" class="section">
+        <div class="section-header reveal">
+            <span class="section-tag">INTERACTIVE MAP</span>
+            <h2 class="section-title">Journey Through Shu</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc">
+                Click on the marked locations to explore the geographical references in Li Bai's poem. Discover ancient and modern place names, related verses, and historical significance.
+            </p>
+        </div>
+        
+        <div class="map-container reveal">
+            <div class="map-area">
+                <img src="images/shu-road-map.jpg" alt="Map of Shu Road" class="map-image">
+                <div class="map-point" data-id="chang-an" data-name="Chang'an" style="top: 25%; left: 78%;"></div>
+                <div class="map-point" data-id="qinling" data-name="Qinling Mountains" style="top: 35%; left: 70%;"></div>
+                <div class="map-point" data-id="qingni" data-name="Qingni Ridge" style="top: 45%; left: 60%;"></div>
+                <div class="map-point" data-id="jianmen" data-name="Jianmen Pass" style="top: 55%; left: 45%;"></div>
+                <div class="map-point" data-id="jincheng" data-name="Jincheng (Chengdu)" style="top: 75%; left: 25%;"></div>
+            </div>
+            
+            <div class="map-info" id="mapInfo">
+                <div class="map-info-default">
+                    <h3>Explore the Map</h3>
+                    <p>Click on any location marker to discover its significance in Li Bai's poem.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Future Section -->
+    <section id="future" class="section section-dark">
+        <div class="section-header reveal">
+            <span class="section-tag">VISION & ROADMAP</span>
+            <h2 class="section-title">The Road Ahead</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc">
+                Our vision for this digital humanities project and future directions for development.
+            </p>
+        </div>
+        
+        <div class="future-grid">
+            <div class="future-card reveal">
+                <h3>Project Vision</h3>
+                <p>
+                    This project was born from a passion for bridging classical Chinese literature with modern digital scholarship. We believe that ancient texts like "Hard Roads in Shu" deserve to be experienced in ways that honor their cultural depth while making them accessible to global audiences.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Digital Humanities Mission</h3>
+                <p>
+                    Our goal is to demonstrate how digital tools can illuminate traditional humanities research. By combining geographic visualization, bilingual textual analysis, and interactive mapping, we create new pathways for understanding and appreciating classical literature.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Future Enhancements</h3>
+                <p>
+                    Planned updates include: TEI-encoded full text with scholarly annotations, audio recordings of traditional Chinese recitation, 3D terrain visualization of the Shu Road, comparative analysis with other Tang Dynasty travel poetry, and collaborative annotation features for scholars.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Research Applications</h3>
+                <p>
+                    This platform can serve as a model for digital humanities projects examining other classical Chinese texts. The framework we've developed—combining textual analysis with geographic and historical context—can be adapted for studying poetry, historical documents, and literary journeys.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Educational Outreach</h3>
+                <p>
+                    We envision this project being used in classrooms worldwide to teach Chinese literature, history, and digital humanities methods. Future versions will include guided tours, discussion prompts, and assignment modules for educators.
+                </p>
+            </div>
+            
+            <div class="future-card reveal">
+                <h3>Community Building</h3>
+                <p>
+                    We hope to build a community of scholars, students, and enthusiasts passionate about classical Chinese literature. Future features may include forums for discussion, crowdsourced annotations, and collaborative research tools.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- About Us Section -->
+    <section id="about" class="section">
+        <div class="section-header reveal">
+            <span class="section-tag">THE TEAM</span>
+            <h2 class="section-title">About Us</h2>
+            <div class="section-divider">◆</div>
+            <p class="section-desc">
+                Meet the creators behind this digital humanities project.
+            </p>
+        </div>
+        
+        <div class="about-content">
+            <div class="team-member reveal">
+                <div class="member-avatar">Y</div>
+                <h3>Yuming</h3>
+                <p class="role">Technical Development &amp; Interaction Design</p>
+                <p>
+                    Yuming leads the technical implementation of the project, developing the interactive map functionality, bilingual reader interface, and overall user experience. With expertise in web development and digital humanities tools, Yuming ensures that the technical aspects serve the scholarly content effectively.
+                </p>
+            </div>
+            
+            <div class="team-member reveal">
+                <div class="member-avatar">J</div>
+                <h3>Jingtong</h3>
+                <p class="role">Reading Section &amp; Content Curation</p>
+                <p>
+                    Jingtong is responsible for the bilingual reading experience, carefully curating the parallel text presentation and ensuring the accuracy of translations. With a background in classical Chinese literature, Jingtong brings scholarly depth to the project's textual content.
+                </p>
+            </div>
+            
+            <div class="about-shared reveal">
+                <h4>Collaborative Work</h4>
+                <p>
+                    Both team members jointly contributed to the project conception, topic selection, and overall design logic. The project represents a collaborative effort combining technical expertise with literary scholarship to create a meaningful digital humanities experience.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-brand">
+                <h3>蜀道难 <span>|</span> Hard Roads in Shu</h3>
+                <p>
+                    A digital humanities project exploring Li Bai's masterpiece through geographic visualization, bilingual reading, and interactive mapping.
+                </p>
+            </div>
+            
+            <div class="footer-links">
+                <h4>Navigation</h4>
+                <ul>
+                    <li><a href="#home">Home</a></li>
+                    <li><a href="#reading">Reading</a></li>
+                    <li><a href="#map">Map</a></li>
+                    <li><a href="#future">Future</a></li>
+                    <li><a href="#about">About Us</a></li>
+                </ul>
+            </div>
+            
+            <div class="footer-contact">
+                <h4>Project Info</h4>
+                <ul>
+                    <li>Original Text: Li Bai</li>
+                    <li>Translation: Witter Bynner (1929)</li>
+                    <li>Digital Humanities</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="footer-bottom">
+            <p class="footer-quote">"蜀道之难，难于上青天，侧身西望长咨嗟"</p>
+            <p class="footer-copyright">
+                &copy; 2026 Hard Roads in Shu Digital Humanities Project
+            </p>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+    <script>
+    // ── Poem data with textual variants (collation) ──
+    // Format for cn: array of tokens. Each token is either a plain string
+    // or an object { del: "old", ins: "new" } indicating a manuscript variant.
+    const collationData = [
+        {
+            cn: [{ del:"嚱", ins:"噫" }, "吁嚱，危乎高哉！"],
+            en: "Oho! Behold! How high! How steep!"
+        },
+        {
+            cn: ["蜀道之难，难于上青天！"],
+            en: "The road to Shu is harder than climbing to the blue sky."
+        },
+        {
+            cn: ["蚕丛及鱼凫，开国何茫然！"],
+            en: "Cancong and Yufu, founders of the ancient Shu kingdom, Their deeds in the misty past are but legends now."
+        },
+        {
+            cn: ["尔来四万八千岁，不与秦", { del:"塞", ins:"壁" }, "通人烟。"],
+            en: "For forty-eight thousand years since then, No human trace has crossed the Qin mountains."
+        },
+        {
+            cn: ["西当太白有鸟道，可以横绝峨眉巅。"],
+            en: "Only birds could find a path west of Taibai Peak, Flying across the summit of Emei Mountain."
+        },
+        {
+            cn: ["地崩山摧壮士死，然后天梯石栈相钩连。"],
+            en: "When mountains crumbled and brave men died, Then heaven's ladders and stone bridges were linked."
+        },
+        {
+            cn: ["上有六龙回日之高标，下有冲波逆折之回川。"],
+            en: "Above, peaks so high that the six dragons of the sun must turn back; Below, rushing waves that churn and twist in the winding rivers."
+        },
+        {
+            cn: ["黄鹤之飞尚不得过，猿猱欲度愁攀援。"],
+            en: "Even the yellow crane cannot fly across; Even the monkeys despair of climbing over."
+        },
+        {
+            cn: ["青泥何盘盘，百步九折萦岩峦。"],
+            en: "The Qingni Ridge winds and twists, Nine turns in a hundred steps around the rocky peaks."
+        },
+        {
+            cn: ["扪参历井仰胁息，以手抚膺坐长叹。"],
+            en: "Touching the stars, one gasps for breath, Hand on chest, sitting down with a long sigh."
+        },
+        {
+            cn: ["问君西游何时还？畏途巉岩不可攀。"],
+            en: "Tell me, when will you return from your western journey? The perilous path with its jagged rocks cannot be climbed."
+        },
+        {
+            cn: ["但见悲鸟号古木，雄飞雌从绕林间。"],
+            en: "Only hear mournful birds crying in ancient trees, Males flying ahead, females following, circling through the forest."
+        },
+        {
+            cn: ["又闻子规啼夜月，愁空山。"],
+            en: "And hear the cuckoo weeping under the moon, Filling the empty mountains with sorrow."
+        },
+        {
+            cn: ["蜀道之难，难于上青天，使人听此", { del:"凋", ins:"调" }, "朱颜！"],
+            en: "The road to Shu is harder than climbing to the blue sky, Hearing this makes one's rosy cheeks fade with fear!"
+        },
+        {
+            cn: ["连峰去天不盈尺，枯松倒挂倚绝壁。"],
+            en: "Peaks linked together, less than a foot from heaven, Withered pines hang upside down against sheer cliffs."
+        },
+        {
+            cn: ["飞湍瀑流争喧", { del:"豗", ins:"嘩" }, "，砯崖转石万壑雷。"],
+            en: "Rushing torrents and cascading waterfalls clamor and roar, Boulders tumbling down cliffs like thunder in a thousand valleys."
+        },
+        {
+            cn: ["其险也如此，嗟尔远道之人胡为乎来哉！"],
+            en: "So dangerous it is! Alas, why have you come, You who must travel this distant road?"
+        },
+        {
+            cn: ["剑阁峥嵘而崔嵬，一夫当关，万夫莫开。"],
+            en: "Jianmen Pass rises steep and towering, One man guards it, ten thousand cannot pass."
+        },
+        {
+            cn: ["所守或匪亲，化为狼与豺。"],
+            en: "If the guardian is not loyal, he becomes a wolf or jackal, Ready to devour the unwary traveler."
+        },
+        {
+            cn: ["朝避猛虎，夕避长蛇；磨牙吮血，杀人如麻。"],
+            en: "Avoid the fierce tiger in the morning, the long serpent at night; They grind their teeth and suck blood, killing like hemp."
+        },
+        {
+            cn: ["锦城虽云乐，不如早还家。"],
+            en: "Though the Brocade City may be pleasant, It is better to return home early."
+        },
+        {
+            cn: ["蜀道之难，难于上青天，侧身西望长咨嗟！"],
+            en: "The road to Shu is harder than climbing to the blue sky, Turning westward with a long, long sigh!"
+        }
+    ];
+
+    // Render a cn token array into HTML
+    function renderCn(tokens) {
+        if (typeof tokens === 'string') return tokens;
+        return tokens.map(function(t) {
+            if (typeof t === 'string') return t;
+            // variant: del old, ins new above
+            return '<span class="ins-wrapper"><span class="ins-new">' + t.ins +
+                   '</span><span class="ins-old">' + t.del + '</span></span>';
+        }).join('');
+    }
+
+    // Build collation panel
+    function initCollationPanel() {
+        var panel = document.getElementById('collationPanel');
+        if (!panel) return;
+        collationData.forEach(function(verse, idx) {
+            var div = document.createElement('div');
+            div.className = 'collation-verse';
+            div.dataset.index = idx;
+            div.innerHTML =
+                '<span class="v-num">' + (idx + 1) + '</span>' +
+                '<div>' +
+                  '<div class="v-text">' + renderCn(verse.cn) + '</div>' +
+                  '<div class="collation-en">' + verse.en + '</div>' +
+                '</div>';
+            panel.appendChild(div);
+        });
+
+        // Hover highlight
+        var verses = panel.querySelectorAll('.collation-verse');
+        verses.forEach(function(v) {
+            v.addEventListener('mouseenter', function() { v.classList.add('active'); });
+            v.addEventListener('mouseleave', function() { v.classList.remove('active'); });
+        });
+    }
+
+    // ── Manuscript pan & zoom ──
+    function initManuscriptViewer() {
+        var viewer = document.getElementById('manuscriptViewer');
+        var img    = document.getElementById('manuscriptImg');
+        if (!viewer || !img) return;
+
+        var scale = 1, minScale = 0.4, maxScale = 4;
+        var offsetX = 0, offsetY = 0;
+        var dragging = false, startX, startY, baseX, baseY;
+
+        function applyTransform() {
+            img.style.transform = 'translate(' + offsetX + 'px,' + offsetY + 'px) scale(' + scale + ')';
+            document.getElementById('zoomLabel').textContent = Math.round(scale * 100) + '%';
+        }
+
+        // Clamp offset so image doesn't leave the viewer completely
+        function clamp() {
+            var iw = img.naturalWidth  * scale;
+            var ih = img.naturalHeight * scale;
+            var vw = viewer.clientWidth;
+            var vh = viewer.clientHeight;
+            var minX = Math.min(0, vw - iw);
+            var minY = Math.min(0, vh - ih);
+            offsetX = Math.max(minX, Math.min(0, offsetX));
+            offsetY = Math.max(minY, Math.min(0, offsetY));
+        }
+
+        document.getElementById('zoomIn').addEventListener('click', function() {
+            scale = Math.min(maxScale, scale + 0.25);
+            clamp(); applyTransform();
+        });
+        document.getElementById('zoomOut').addEventListener('click', function() {
+            scale = Math.max(minScale, scale - 0.25);
+            clamp(); applyTransform();
+        });
+        document.getElementById('zoomReset').addEventListener('click', function() {
+            scale = 1; offsetX = 0; offsetY = 0; applyTransform();
+        });
+
+        // Wheel zoom
+        viewer.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            var delta = e.deltaY > 0 ? -0.15 : 0.15;
+            scale = Math.max(minScale, Math.min(maxScale, scale + delta));
+            clamp(); applyTransform();
+        }, { passive: false });
+
+        // Drag
+        viewer.addEventListener('mousedown', function(e) {
+            if (e.button !== 0) return;
+            dragging = true;
+            startX = e.clientX; startY = e.clientY;
+            baseX = offsetX;   baseY = offsetY;
+            viewer.style.cursor = 'grabbing';
+        });
+        window.addEventListener('mousemove', function(e) {
+            if (!dragging) return;
+            offsetX = baseX + (e.clientX - startX);
+            offsetY = baseY + (e.clientY - startY);
+            clamp(); applyTransform();
+        });
+        window.addEventListener('mouseup', function() {
+            dragging = false;
+            viewer.style.cursor = 'grab';
+        });
+
+        // Touch support
+        var touchStartX, touchStartY, touchBaseX, touchBaseY;
+        viewer.addEventListener('touchstart', function(e) {
+            if (e.touches.length === 1) {
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+                touchBaseX = offsetX; touchBaseY = offsetY;
+            }
+        }, { passive: true });
+        viewer.addEventListener('touchmove', function(e) {
+            if (e.touches.length === 1) {
+                offsetX = touchBaseX + (e.touches[0].clientX - touchStartX);
+                offsetY = touchBaseY + (e.touches[0].clientY - touchStartY);
+                clamp(); applyTransform();
+            }
+        }, { passive: true });
+
+        // Initial fit
+        img.addEventListener('load', function() {
+            var ratio = Math.min(viewer.clientWidth / img.naturalWidth, viewer.clientHeight / img.naturalHeight);
+            scale = Math.max(minScale, Math.min(1, ratio));
+            offsetX = 0; offsetY = 0;
+            applyTransform();
+        });
+        if (img.complete && img.naturalWidth) {
+            var ratio = Math.min(viewer.clientWidth / img.naturalWidth, viewer.clientHeight / img.naturalHeight);
+            scale = Math.max(minScale, Math.min(1, ratio));
+            applyTransform();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        initCollationPanel();
+        initManuscriptViewer();
+    });
+    </script>
+</body>
+</html>
